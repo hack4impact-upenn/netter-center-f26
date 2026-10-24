@@ -1,0 +1,26 @@
+{
+  "name": "api",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "build": "bun build src/index.ts --outdir dist --target bun",
+    "start": "bun dist/index.js",
+    "test": "bun test",
+    "setup": "bun scripts/setup.ts",
+    "lint": "tsc --noEmit",
+    "deploy": "echo 'Deploy via Railway dashboard or CLI'"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3",
+    "hono": "^4",
+    "resend": "^4",
+    "shared": "workspace:*",
+    "stripe": "^17"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "name": "boilerplate",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "turbo dev",
+    "build": "turbo build",
+    "test": "turbo test",
+    "lint": "turbo lint",
+    "format": "prettier --write \"apps/**/*.{ts,tsx}\" \"packages/**/*.ts\"",
+    "deploy": "turbo deploy"
+  },
+  "devDependencies": {
+    "prettier": "^3",
+    "turbo": "^2"
+  },
+  "packageManager": "bun@1.3.11"
+}

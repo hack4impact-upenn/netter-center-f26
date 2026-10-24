@@ -1,0 +1,5 @@
+[build]
+buildCommand = "bun install"
+
+[deploy]
+startCommand = "bun apps/api/src/index.ts"
