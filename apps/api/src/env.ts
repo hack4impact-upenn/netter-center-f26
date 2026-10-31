@@ -20,8 +20,11 @@ const ENV_VARS: EnvVar[] = [
   { name: "R2_ACCESS_KEY_ID", required: false, integration: "storage" },
   { name: "R2_SECRET_ACCESS_KEY", required: false, integration: "storage" },
 
-  // Auth
-  { name: "RESEND_API_KEY", required: false, integration: "auth" },
+  // Email (Resend)
+  { name: "RESEND_API_KEY", required: false, integration: "email" },
+  { name: "EMAIL_FROM", required: false, integration: "email" },
+  { name: "ADMIN_EMAILS", required: false, integration: "email" },
+  { name: "FILE_NAME_FORMAT", required: false, integration: "email" },
 
   // LLM
   { name: "OPENROUTER_API_KEY", required: false, integration: "llm" },

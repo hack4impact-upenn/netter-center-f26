@@ -4,6 +4,7 @@ import storage from "./storage";
 import llm from "./llm";
 import payments from "./payments";
 import intake from "./intake";
+import notifications from "./notifications";
 
 export function registerRoutes(app: Hono) {
   app.route("/api/auth", auth);
@@ -11,4 +12,5 @@ export function registerRoutes(app: Hono) {
   app.route("/api/llm", llm);
   app.route("/api/payments", payments);
   app.route("/api/intake", intake);
+  app.route("/api/notifications", notifications);
 }

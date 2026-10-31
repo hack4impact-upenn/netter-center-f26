@@ -5,6 +5,7 @@ import { errorHandler } from "./middleware/error";
 import { logger } from "./middleware/logger";
 import { registerRoutes } from "./routes";
 import { query } from "./integrations/database";
+import { startReminderScheduler } from "./jobs/reminders";
 
 validateEnv();
 
@@ -30,6 +31,10 @@ app.get("/api/health", async (c) => {
 registerRoutes(app);
 
 app.onError(errorHandler);
+
+if (process.env.RESEND_API_KEY) {
+  startReminderScheduler();
+}
 
 const port = parseInt(process.env.PORT || "3001");
 
