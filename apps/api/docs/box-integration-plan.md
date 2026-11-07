@@ -5,6 +5,18 @@ meaningful changes and keep existing user changes out of unrelated commits.
 Use OAuth user authorization now; keep credential acquisition separate from
 folder listing so a new server-auth Box application can replace OAuth later.
 
+## Scope and ownership
+
+- This work owns the backend Box integration in `apps/api`. Do not modify
+  `apps/web` or implement the application's production frontend; another team
+  owns that work.
+- Keep integration-specific types under `apps/api` and document the API contract
+  for the frontend team without changing their application code.
+- The only frontend deliverable in this plan is a basic testing page in step 5.
+  Keep its HTML and JavaScript under `apps/api`, serve it through the API only
+  when explicitly enabled for local development, and disable it in production.
+  It is a test harness, not a production UI or design reference.
+
 ## 1. Configuration and permission-verification foundation
 
 - Validate OAuth configuration without exposing secret values. Register the
@@ -51,6 +63,10 @@ folder listing so a new server-auth Box application can replace OAuth later.
   component. Keep the listing component independent of OAuth vs. server auth.
 - Request only `id,type,name,created_at,modified_at`; return only direct-child
   files via explicitly constructed response objects and marker pagination.
+- Include the containing folder's ID and display name in the response. Resolve
+  its name through an authorized, metadata-only folder lookup requesting only
+  `id,name`; do not trust a client-supplied folder label. Keep folder access checks
+  ahead of both upstream requests and test this response contract.
 - Keep file names exact and timestamps nullable. Creation/update on Box is not
   necessarily submission into the student's folder.
 - Add meaningful route and integration tests for cross-user access, no upstream
@@ -58,16 +74,37 @@ folder listing so a new server-auth Box application can replace OAuth later.
 - Do not add content, preview, thumbnail, upload, shared-link, or generic proxy
   endpoints. Keep the existing R2 integration separate.
 
-## 5. Live verification and delivery
+## 5. Basic testing page, live verification, and delivery
 
+- Add a minimal HTML/JavaScript test page under `apps/api`, served by a
+  development-only, explicitly enabled API route. Do not edit `apps/web` or add
+  a frontend framework, production navigation, or visual polish.
+- Let a tester use the existing application authentication and Box OAuth flow,
+  then request one or more explicitly authorized folders. Show a plain list or
+  table of exact file names and the containing folder's display name and ID.
+  Listing remains direct-child only; no recursive discovery or enumeration of
+  every folder accessible to the connected Box account.
+- Follow pagination until every file in each requested folder has been listed.
+  Show empty folders and request failures distinctly, without treating a partial
+  result as complete. Basic loading, error, and reconnect messages are sufficient.
+- Call only our backend endpoints. Keep Box credentials and tokens out of the
+  page, keep application session credentials out of URLs and persistent browser
+  storage, and render names as text without interpreting them as HTML. Provide
+  no download links, previews, thumbnails, or file-opening actions.
+- Write route tests for the test-page environment guard and any input handling;
+  test authentication, authorization, validation, and business logic for every
+  backend route it consumes. Check the page in a browser, including Console,
+  failing requests, pagination, and a mobile viewport.
 - Complete the synthetic-fixture permissions experiment before claiming Box
   enforces metadata-only access. Fail closed if that cannot be established.
 - Verify OAuth connection, refresh, disconnect, and listing with real Box calls.
 - Provide documented curl/Postman examples, including fetching every page.
 - Run the API tests, monorepo tests, type checks, build, and formatting checks;
   record pre-existing failures separately from regressions.
-- A frontend viewer, requirement matching, clearance decisions, events/webhooks,
-  and document-content processing are outside this milestone.
+- Hand off the documented endpoint contracts and examples to the production
+  frontend team. Requirement matching, clearance decisions, events/webhooks,
+  document-content processing, and production frontend work remain outside this
+  milestone.
 
 ## Later migration to server authentication
 

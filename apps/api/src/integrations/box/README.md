@@ -9,7 +9,12 @@ an account that already has access to the folders they need to inspect.
 
 Step 1 provides local configuration validation and an opt-in permissions
 experiment. OAuth connection routes, token persistence, and the public listing
-route are not implemented yet. See [the implementation steps](../../../../../docs/box-integration-plan.md).
+route are not implemented yet. See [the implementation steps](../../../docs/box-integration-plan.md).
+
+This work is limited to backend Box integration. The production frontend is
+owned by another team; `apps/web` is outside this work's scope. Step 5 will add
+an intentionally basic, development-only test page under `apps/api` that lists
+file names alongside their containing folder's name and ID.
 
 **Live Box permission enforcement is unverified.** Passing mocked tests only
 verifies the experiment's logic, not Box's actual enforcement.
