@@ -1,3 +1,5 @@
+import { BOX_ENV_VARS, inspectBoxConfiguration } from "./integrations/box/config";
+
 type EnvVar = {
   name: string;
   required: boolean;
@@ -14,6 +16,9 @@ const ENV_VARS: EnvVar[] = [
 
   // D1
   { name: "D1_DATABASE_ID", required: true, integration: "database" },
+
+  // Box is optional. Partial/invalid configuration disables Box, not the API.
+  ...BOX_ENV_VARS.map((name) => ({ name, required: false, integration: "box" })),
 
   // R2
   { name: "R2_BUCKET_NAME", required: false, integration: "storage" },
@@ -49,6 +54,11 @@ export function validateEnv(): void {
         warnings.push(`  - ${v.name} (${v.integration})`);
       }
     }
+  }
+
+  const box = inspectBoxConfiguration();
+  if (box.status === "invalid") {
+    warnings.push(...box.errors.map((error) => `  - Box unavailable: ${error}`));
   }
 
   if (warnings.length > 0) {
