@@ -79,6 +79,19 @@ metadata response types, pagination, and future requirement-checking logic.
 
 ## Verification status
 
+- Step 1 code implemented: optional OAuth configuration validation, safe startup
+  diagnostics, documented setup, and opt-in synthetic permissions probe. No
+  public routes have been added; route auth/validation/business tests begin with
+  step 3 and accompany each route implementation.
+- Automated verification: 102 new Box tests and all 59 existing tests pass
+  (`bun run test`: 161 total). `bun run build` passes. New Box source, scripts,
+  tests, and startup integration pass an isolated strict TypeScript check using
+  installed Bun types. Changed files pass Prettier and `git diff --check`.
+- Pre-existing type-check failures: `bun run lint` fails because the API tsconfig
+  names `bun-types`, which is not resolved by the installed dependencies. Running
+  the API compiler with `--types bun` also reveals existing errors in auth,
+  database, intake, LLM, storage, and older tests. These existed before step 1
+  and have not been changed as part of the Box foundation.
 - Existing local environment: `BOX_CLIENT_ID` and `BOX_CLIENT_SECRET` are populated;
   their validity and the app's Developer Console configuration are unverified.
 - Live permissions experiment: pending user-authorized token and synthetic

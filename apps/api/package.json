@@ -9,6 +9,7 @@
     "start": "bun dist/index.js",
     "test": "bun test",
     "setup": "bun scripts/setup.ts",
+    "verify:box-permissions": "bun scripts/verify-box-permissions.ts",
     "lint": "tsc --noEmit",
     "deploy": "echo 'Deploy via Railway dashboard or CLI'"
   },
