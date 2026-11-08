@@ -3,7 +3,7 @@ export function generateCode(length: number = 6): string {
   crypto.getRandomValues(bytes);
   let code = "";
   for (let i = 0; i < length; i++) {
-    code += (bytes[i] % 10).toString();
+    code += (bytes[i]! % 10).toString();
   }
   return code;
 }

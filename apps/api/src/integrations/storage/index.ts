@@ -33,7 +33,9 @@ export async function upload(
   );
 }
 
-export async function download(key: string): Promise<Uint8Array | null> {
+export async function download(
+  key: string
+): Promise<Uint8Array<ArrayBuffer> | null> {
   try {
     const res = await getClient().send(
       new GetObjectCommand({ Bucket: bucket(), Key: key })

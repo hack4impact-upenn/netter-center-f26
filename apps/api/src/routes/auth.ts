@@ -56,7 +56,7 @@ auth.post("/register", authRateLimit, async (c) => {
 
   await execute(
     "INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)",
-    [token, users[0].id, sessionExpiry]
+    [token, users[0]!.id, sessionExpiry]
   );
 
   return c.json({ token }, 201);
@@ -78,7 +78,7 @@ auth.post("/login", authRateLimit, async (c) => {
     return c.json({ error: "Invalid email or password" }, 401);
   }
 
-  const valid = await Bun.password.verify(body.password, users[0].password_hash);
+  const valid = await Bun.password.verify(body.password, users[0]!.password_hash);
 
   if (!valid) {
     return c.json({ error: "Invalid email or password" }, 401);
@@ -92,7 +92,7 @@ auth.post("/login", authRateLimit, async (c) => {
 
   await execute(
     "INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)",
-    [token, users[0].id, sessionExpiry]
+    [token, users[0]!.id, sessionExpiry]
   );
 
   return c.json({ token });
