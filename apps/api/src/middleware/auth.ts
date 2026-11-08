@@ -21,10 +21,11 @@ export const requireAuth = createMiddleware<AppEnv>(async (c, next) => {
     [token]
   );
 
-  if (sessions.length === 0) {
+  const session = sessions[0];
+  if (!session) {
     return c.json({ error: "Invalid or expired session" }, 401);
   }
 
-  c.set("userId", sessions[0].user_id);
+  c.set("userId", session.user_id);
   await next();
 });

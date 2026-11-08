@@ -25,11 +25,11 @@ describe("parseRSSItems", () => {
     const items = parseRSSItems(xml);
 
     expect(items).toHaveLength(2);
-    expect(items[0].title).toBe("First Article");
-    expect(items[0].link).toBe("https://example.com/1");
-    expect(items[0].description).toBe("Description of first article");
-    expect(items[0].pubDate).toBe("Mon, 01 Jan 2024 00:00:00 GMT");
-    expect(items[1].title).toBe("Second Article");
+    expect(items[0]!.title).toBe("First Article");
+    expect(items[0]!.link).toBe("https://example.com/1");
+    expect(items[0]!.description).toBe("Description of first article");
+    expect(items[0]!.pubDate).toBe("Mon, 01 Jan 2024 00:00:00 GMT");
+    expect(items[1]!.title).toBe("Second Article");
   });
 
   it("handles CDATA-wrapped content", () => {
@@ -49,8 +49,8 @@ describe("parseRSSItems", () => {
     const items = parseRSSItems(xml);
 
     expect(items).toHaveLength(1);
-    expect(items[0].title).toBe("Breaking: <em>Important</em> News");
-    expect(items[0].description).toBe("This has <b>HTML</b> inside");
+    expect(items[0]!.title).toBe("Breaking: <em>Important</em> News");
+    expect(items[0]!.description).toBe("This has <b>HTML</b> inside");
   });
 
   it("returns empty array for feed with no items", () => {
@@ -80,10 +80,10 @@ describe("parseRSSItems", () => {
     const items = parseRSSItems(xml);
 
     expect(items).toHaveLength(1);
-    expect(items[0].title).toBe("Title Only");
-    expect(items[0].link).toBe("");
-    expect(items[0].description).toBe("");
-    expect(items[0].pubDate).toBe("");
+    expect(items[0]!.title).toBe("Title Only");
+    expect(items[0]!.link).toBe("");
+    expect(items[0]!.description).toBe("");
+    expect(items[0]!.pubDate).toBe("");
   });
 
   it("handles mixed CDATA and plain text across items", () => {
@@ -109,10 +109,10 @@ describe("parseRSSItems", () => {
     const items = parseRSSItems(xml);
 
     expect(items).toHaveLength(2);
-    expect(items[0].title).toBe("CDATA Title");
-    expect(items[0].description).toBe("Plain description");
-    expect(items[1].title).toBe("Plain Title");
-    expect(items[1].description).toBe("CDATA description");
+    expect(items[0]!.title).toBe("CDATA Title");
+    expect(items[0]!.description).toBe("Plain description");
+    expect(items[1]!.title).toBe("Plain Title");
+    expect(items[1]!.description).toBe("CDATA description");
   });
 });
 

@@ -9,7 +9,10 @@ mock.module("../../integrations/database", () => ({
 }));
 
 const mockUpload = mock(() => Promise.resolve());
-const mockDownload = mock(() => Promise.resolve(new Uint8Array([72, 101, 108, 108, 111])));
+const mockDownload = mock(
+  (): Promise<Uint8Array<ArrayBuffer> | null> =>
+    Promise.resolve(new Uint8Array([72, 101, 108, 108, 111]))
+);
 const mockRemove = mock(() => Promise.resolve());
 const mockList = mock(() => Promise.resolve(["file1.txt", "file2.txt"]));
 
