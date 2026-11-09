@@ -9,6 +9,8 @@
     "start": "bun dist/index.js",
     "test": "bun test",
     "setup": "bun scripts/setup.ts",
+    "seed": "bun scripts/seed.ts",
+    "reset": "bun scripts/reset.ts",
     "lint": "tsc --noEmit",
     "deploy": "echo 'Deploy via Railway dashboard or CLI'"
   },
