@@ -16,17 +16,13 @@ function checkEnv() {
   }
 }
 
-async function setup() {
-  checkEnv();
+async function runSqlFile(label: string, path: URL) {
+  console.log(`\n${label}...\n`);
 
-  console.log("Setting up database...\n");
+  const sql = await Bun.file(path).text();
 
-  const schema = await Bun.file(
-    new URL("../src/schema.sql", import.meta.url)
-  ).text();
-
-  // Remove comment-only lines, then split on semicolons
-  const cleaned = schema
+  // Remove comment-only lines
+  const cleaned = sql
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => !line.startsWith("--"))
@@ -37,20 +33,38 @@ async function setup() {
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
 
-  for (const sql of statements) {
+  for (const stmt of statements) {
     try {
-      await execute(sql);
-      const match = sql.match(
-        /(?:CREATE\s+(?:TABLE|INDEX)\s+IF\s+NOT\s+EXISTS\s+)(\w+)/i
+      await execute(stmt);
+      const match = stmt.match(
+        /(?:CREATE\s+(?:TABLE|INDEX|VIEW|TRIGGER)\s+IF\s+NOT\s+EXISTS\s+)(\w+)/i
       );
-      const name = match ? match[1] : "statement";
+      const name = match ? match[1] : stmt.slice(0, 50);
       console.log(`  ✓ ${name}`);
     } catch (err) {
-      console.error(`  ✗ Failed: ${sql.slice(0, 60)}...`);
+      console.error(`  ✗ Failed: ${stmt.slice(0, 80)}...`);
       console.error(`    ${err instanceof Error ? err.message : err}`);
       process.exit(1);
     }
   }
+}
+
+async function setup() {
+  checkEnv();
+
+  console.log("Setting up database...");
+
+  // 1. Core schema (tables, indexes, triggers)
+  await runSqlFile(
+    "Creating tables",
+    new URL("../src/schema.sql", import.meta.url)
+  );
+
+  // 2. Overview view
+  await runSqlFile(
+    "Creating views",
+    new URL("../src/clearance-overview.sql", import.meta.url)
+  );
 
   console.log("\n✓ Database setup complete.");
 }
