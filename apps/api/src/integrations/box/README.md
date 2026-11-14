@@ -8,8 +8,9 @@ an account that already has access to the folders they need to inspect.
 ## Current implementation
 
 Step 1 provides local configuration validation and an opt-in permissions
-experiment. OAuth connection routes, token persistence, and the public listing
-route are not implemented yet. See [the implementation steps](../../../docs/box-integration-plan.md).
+experiment. Step 2 adds the D1 authorization schema, encrypted token persistence,
+and refresh coordination. OAuth connection routes follow in step 3, and folder
+listing follows in step 4. See [the implementation steps](../../../docs/box-integration-plan.md).
 
 This work is limited to backend Box integration. The production frontend is
 owned by another team; `apps/web` is outside this work's scope. Step 5 will add
@@ -60,6 +61,88 @@ Consumers must require `inspectBoxConfiguration().status === "ready"` before
 using Box. Required D1 environment variables are unchanged; see the
 [database setup guide](../database/README.md).
 
+## Persistent authorization and token storage
+
+Configure `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, and `D1_DATABASE_ID` in
+`apps/api/.env` using the [database setup guide](../database/README.md). Add
+`BOX_TOKEN_ENCRYPTION_KEY` using the generation command above if it is not already
+set. Keep the same key across credential-service instances and restarts.
+
+From `apps/api`, apply the additive schema through the existing setup command:
+
+```sh
+bun run setup
+```
+
+The schema can be reapplied and preserves existing users and sessions. It adds
+`box_connections`, `box_oauth_attempts`, `box_folder_access`, and their indexes.
+All new timestamps use integer Unix milliseconds. Existing session timestamps
+continue to support both ISO strings and SQLite datetime strings.
+
+Instantiate the store inside the private credential component with the decoded
+32-byte key from `inspectBoxConfiguration()`:
+
+```ts
+import { BoxStore } from "./integrations/box/store";
+
+const store = new BoxStore({ encryptionKey: config.tokenEncryptionKey });
+```
+
+- `createOAuthAttempt(userId, sessionToken)` requires a live application session
+  owned by that user. It returns random state and browser nonce values for the
+  authorization URL and browser cookie. SHA-256 hashes are persisted for those
+  values, alongside a foreign-key reference to the initiating session. Attempts
+  expire after ten minutes. Creating a new attempt also removes expired attempts.
+- `consumeOAuthAttempt(state, browserNonce)` checks both hashes, the deadline, and
+  the initiating session's continued validity. It atomically deletes the attempt
+  and returns its application user ID. This supports a callback without a Bearer
+  header. The route must supply the nonce from the initiating browser's cookie.
+- `saveConnection(...)` keeps one Box connection per application user and encrypts
+  the access/refresh pair together with AES-256-GCM. Each write uses a random
+  12-byte nonce and authenticates the connection ID, application user, Box user,
+  and token version. The versioned envelope supports future format changes.
+- Reconnecting the same Box account preserves folder grants. Switching accounts
+  requires `disconnect(userId, connectionId)`, which cascades deletion of that
+  connection's folder grants. Concurrent saves use an expected token version,
+  returning `null` if another save or disconnect wins the race.
+- `grantFolder`, `revokeFolder`, and `getFolderConnection` operate on exact folder
+  IDs. Provisioning belongs to trusted backend code. Composite foreign keys
+  enforce that each grant uses its application user's own connection.
+- `getConnection` and `getFolderConnection` return explicit metadata objects.
+  Credential methods are reserved for the private credential component.
+
+Store `null`/`false` results represent rejected or conflicting operations.
+Persistence errors throw a sanitized error and must be propagated as errors.
+The D1 transport also rejects malformed or failed query envelopes.
+
+### Refresh coordination
+
+1. Read connection metadata and use `getActiveTokens(userId, connectionId)` for
+   unexpired credentials. A locked, expired, or missing connection returns `null`.
+2. Call `acquireRefresh(userId, connectionId, expectedVersion)` when a refresh is
+   needed. Only one database client can acquire the two-minute lease. The lease
+   contains the old token pair and identifiers needed to complete the operation.
+3. Exchange the refresh token with Box in step 3's credential component, then
+   call `completeRefresh(lease, replacementPair, accessExpiresAt)`. This persists
+   the entire pair in a single conditional SQL update, increments its version,
+   and releases the lease. Completion requires the matching owner, connection,
+   Box user, version, lock ID, and an unexpired lease.
+4. After a rejected or uncertain refresh outcome, call `failRefresh(lease)`.
+   It clears credentials and sets `reconnect_required` only while that lease
+   still owns the row. If a successful write merely lost its response, the
+   version guard preserves the replacement pair that was already committed.
+
+An expired lease cannot be reacquired using the old refresh token. The next
+`acquireRefresh` call clears the uncertain credentials and requires reconnection.
+Later refresh completions cannot overwrite a reconnection or recreate a deleted
+connection. Credential callers must honor `reconnect_required`, even when an
+existing folder grant remains available to identify the affected connection.
+
+Losing or replacing the encryption key makes existing ciphertext unreadable.
+Back up the key in the deployment secret store. Reconnection writes credentials
+under the configured key. Automated key rotation is a future credential-service
+operation.
+
 ## Content-access boundary
 
 The listing component must receive only a folder-restricted token with
@@ -69,7 +152,7 @@ storage encryption key, and downscoping belong inside a private credential
 component, separate from the public listing service. Ordinary users must not
 be able to choose a token scope, substitute another connection, or mint tokens.
 
-This separation is not implemented in step 1. It remains necessary before
+The private credential service is scheduled with the OAuth routes. It is required before
 claiming that compromising the listing service cannot expose parent tokens.
 Even with isolation, the credential component is privileged. The feature does
 not alter the Box account holder's existing access through Box itself.

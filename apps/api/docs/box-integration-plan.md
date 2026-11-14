@@ -35,11 +35,20 @@ folder listing so a new server-auth Box application can replace OAuth later.
 
 ## 2. Persistent authorization data and token protection
 
+- Implemented with local SQLite verification. Apply the additive schema to the
+  configured D1 database through `bun run setup` from `apps/api`.
 - Add Box connections, short-lived OAuth attempts, exact folder grants, and
   database-backed refresh coordination to D1.
 - Encrypt persisted tokens with authenticated encryption and a dedicated key.
 - Test actual SQL constraints and authorization queries using local SQLite, and
   test encryption integrity and refresh ownership/concurrency behavior.
+- Use one connection per application user. Reconnection preserves grants for the
+  same Box account. Switching Box accounts requires disconnecting first, which
+  removes the old folder grants.
+- Consume OAuth attempts once, with a ten-minute lifetime and a live-session
+  check. Coordinate refreshes with a two-minute database lease and versioned
+  writes. An expired or uncertain refresh requires reconnection to avoid reusing
+  a refresh token that Box may already have consumed.
 
 ## 3. User OAuth connection lifecycle
 
@@ -116,18 +125,27 @@ metadata response types, pagination, and future requirement-checking logic.
 
 ## Verification status
 
+- Step 2 implemented with 108 additional tests, covering the real SQLite schema,
+  encrypted token integrity, ownership, OAuth state expiry and replay, separate
+  database clients, refresh races, and lost persistence responses. The full
+  suite passes with 269 tests. The build and strict focused TypeScript check for
+  all Box code, tests, and scripts pass.
+- Hardened the existing D1 query helper to reject failed or malformed result
+  envelopes. Its previously unsafe first-result access is also resolved.
+- Remote D1 schema application and live Box permission verification remain
+  pending. Step 3 will introduce the OAuth routes and their route-specific tests.
 - Step 1 code implemented: optional OAuth configuration validation, safe startup
   diagnostics, documented setup, and opt-in synthetic permissions probe. No
   public routes have been added; route auth/validation/business tests begin with
   step 3 and accompany each route implementation.
-- Automated verification: 102 new Box tests and all 59 existing tests pass
+- Step 1 verification: 102 new Box tests and all 59 existing tests pass
   (`bun run test`: 161 total). `bun run build` passes. New Box source, scripts,
   tests, and startup integration pass an isolated strict TypeScript check using
   installed Bun types. Changed files pass Prettier and `git diff --check`.
 - Pre-existing type-check failures: `bun run lint` fails because the API tsconfig
   names `bun-types`, which is not resolved by the installed dependencies. Running
   the API compiler with `--types bun` also reveals existing errors in auth,
-  database, intake, LLM, storage, and older tests. These existed before step 1
+  intake, LLM, storage, and older tests. These existed before step 1
   and have not been changed as part of the Box foundation.
 - Existing local environment: `BOX_CLIENT_ID` and `BOX_CLIENT_SECRET` are populated;
   their validity and the app's Developer Console configuration are unverified.
