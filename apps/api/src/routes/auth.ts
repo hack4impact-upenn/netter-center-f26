@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { query, execute } from "../integrations/database";
 import { requireAuth } from "../middleware/auth";
 import { rateLimit } from "../middleware/rateLimit";
-import type { AppEnv } from "../types";
+import type { AppEnv, UserRole } from "../types";
 
 const authRateLimit = rateLimit(10, 15 * 60 * 1000);
 
@@ -10,13 +10,18 @@ type User = {
   id: string;
   email: string;
   name: string;
+  role: UserRole;
   created_at: string;
 };
 
 const auth = new Hono<AppEnv>();
 
 auth.post("/register", authRateLimit, async (c) => {
-  const body = await c.req.json<{ email?: string; password?: string }>();
+  const body = await c.req.json<{
+    email?: string;
+    password?: string;
+    role?: string;
+  }>();
 
   if (!body.email || !body.password) {
     return c.json({ error: "Email and password are required" }, 400);
@@ -25,6 +30,8 @@ auth.post("/register", authRateLimit, async (c) => {
   if (body.password.length < 8) {
     return c.json({ error: "Password must be at least 8 characters" }, 400);
   }
+
+  const role = body.role === "admin" ? "admin" : "ta";
 
   // Check if user already exists
   const existing = await query<{ id: string }>(
@@ -39,8 +46,8 @@ auth.post("/register", authRateLimit, async (c) => {
   const passwordHash = await Bun.password.hash(body.password);
 
   await execute(
-    "INSERT INTO users (email, password_hash) VALUES (?, ?)",
-    [body.email, passwordHash]
+    "INSERT INTO users (email, password_hash, role) VALUES (?, ?, ?)",
+    [body.email, passwordHash, role]
   );
 
   const users = await query<{ id: string }>(
@@ -59,7 +66,7 @@ auth.post("/register", authRateLimit, async (c) => {
     [token, users[0]!.id, sessionExpiry]
   );
 
-  return c.json({ token }, 201);
+  return c.json({ token, role }, 201);
 });
 
 auth.post("/login", authRateLimit, async (c) => {
@@ -69,8 +76,8 @@ auth.post("/login", authRateLimit, async (c) => {
     return c.json({ error: "Email and password are required" }, 400);
   }
 
-  const users = await query<{ id: string; password_hash: string }>(
-    "SELECT id, password_hash FROM users WHERE email = ?",
+  const users = await query<{ id: string; password_hash: string; role: UserRole }>(
+    "SELECT id, password_hash, role FROM users WHERE email = ?",
     [body.email]
   );
 
@@ -95,7 +102,7 @@ auth.post("/login", authRateLimit, async (c) => {
     [token, users[0]!.id, sessionExpiry]
   );
 
-  return c.json({ token });
+  return c.json({ token, role: users[0].role });
 });
 
 auth.post("/logout", requireAuth, async (c) => {
@@ -113,7 +120,7 @@ auth.get("/me", requireAuth, async (c) => {
   const userId = c.get("userId");
 
   const users = await query<User>(
-    "SELECT id, email, name, created_at FROM users WHERE id = ?",
+    "SELECT id, email, name, role, created_at FROM users WHERE id = ?",
     [userId]
   );
 
