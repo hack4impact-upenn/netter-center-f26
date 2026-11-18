@@ -3,6 +3,11 @@ import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { inspectBoxConfiguration } from "../integrations/box/config";
 import { createBoxConnectionService } from "../integrations/box/connection-service";
 import { createBoxOAuth } from "../integrations/box/oauth";
+import { BoxListingError, readPageRequest } from "../integrations/box/listing-contract";
+import {
+  createListingWorkerClient,
+  inspectListingWorker,
+} from "../integrations/box/listing-worker-client";
 import { BoxStore } from "../integrations/box/store";
 import { requireAuth } from "../middleware/auth";
 import type { AppEnv } from "../types";
@@ -22,7 +27,11 @@ const resultMessage = {
 } as const;
 
 export function createBoxRoutes(
-  setup: { service: Service; secureCookies: boolean } | null,
+  setup: {
+    service: Service;
+    secureCookies: boolean;
+    listFolder?: ReturnType<typeof createListingWorkerClient>;
+  } | null,
   auth = requireAuth
 ) {
   const box = new Hono<AppEnv>();
@@ -123,10 +132,52 @@ export function createBoxRoutes(
     return c.json(result);
   });
 
+  box.get("/folders/:folderId/files", auth, async (c) => {
+    const params = new URL(c.req.url).searchParams;
+    const limit = params.get("limit") ?? "100";
+    const input = readPageRequest(
+      c.req.param("folderId"),
+      /^[1-9][0-9]{0,3}$/.test(limit) ? Number(limit) : NaN,
+      params.get("marker") ?? undefined
+    );
+    if (
+      !input ||
+      [...params.keys()].some(
+        (key) => !["limit", "marker"].includes(key) || params.getAll(key).length !== 1
+      )
+    ) {
+      return c.json({ error: "Invalid folder ID or pagination parameters" }, 400);
+    }
+    if (!setup?.listFolder) {
+      return c.json({ code: "unavailable", error: "Box listing is unavailable" }, 503);
+    }
+
+    const { service, listFolder } = setup;
+    const fetchPage = async () => {
+      const token = await service.folderListingToken(c.get("userId"), input.folderId);
+      return listFolder(input, token);
+    };
+    try {
+      const page = await fetchPage().catch((error: unknown) => {
+        if (error instanceof BoxListingError && error.code === "token_rejected")
+          return fetchPage();
+        throw error;
+      });
+      return c.json(page);
+    } catch (error) {
+      if (!(error instanceof BoxListingError)) throw error;
+      const safe =
+        error.code === "token_rejected" ? new BoxListingError("upstream") : error;
+      if (safe.retryAfter !== undefined) c.header("Retry-After", safe.retryAfter);
+      return c.json({ code: safe.code, error: safe.message }, safe.status);
+    }
+  });
+
   return box;
 }
 
 const settings = inspectBoxConfiguration();
+const worker = inspectListingWorker();
 const configured =
   settings.status === "ready"
     ? {
@@ -135,6 +186,7 @@ const configured =
           createBoxOAuth(settings.config)
         ),
         secureCookies: settings.config.redirectUri.startsWith("https:"),
+        listFolder: worker ? createListingWorkerClient(worker) : undefined,
       }
     : null;
 

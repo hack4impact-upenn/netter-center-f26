@@ -327,12 +327,16 @@ export class BoxStore {
 
   async getActiveTokens(
     userId: string,
-    connectionId: string
+    connectionId: string,
+    expectedVersion?: number
   ): Promise<BoxTokenPair | null> {
+    const params = [connectionId, userId, this.now()];
+    if (expectedVersion !== undefined) params.push(expectedVersion);
     const rows = await this.run<ConnectionRow>(
       `SELECT * FROM box_connections
-       WHERE id = ? AND user_id = ? AND status = 'active' AND access_expires_at > ?`,
-      [connectionId, userId, this.now()]
+       WHERE id = ? AND user_id = ? AND status = 'active' AND access_expires_at > ?
+         ${expectedVersion === undefined ? "" : "AND token_version = ?"}`,
+      params
     );
     const row = rows[0];
     return row?.tokens_ciphertext

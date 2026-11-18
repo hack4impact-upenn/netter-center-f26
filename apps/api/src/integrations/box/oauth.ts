@@ -1,3 +1,12 @@
+import {
+  BoxListingError,
+  fetchListing,
+  isBoxId,
+  isBoxBearer,
+  listingJson,
+  record,
+  retryAfter,
+} from "./listing-contract";
 import type { BoxOAuthConfig } from "./config";
 import { validateBoxTokens, type BoxTokenPair } from "./tokens";
 
@@ -116,6 +125,61 @@ export function createBoxOAuth(
         throw new BoxOAuthError("unavailable");
       }
       return id;
+    },
+    async downscopeFolder(parentToken: string, folderId: string): Promise<string> {
+      if (!isBoxId(folderId)) throw new BoxListingError("not_found");
+      const response = await fetchListing(
+        request,
+        `${BOX_API}/oauth2/token`,
+        {
+          method: "POST",
+          body: new URLSearchParams({
+            grant_type: "urn:ietf:params:oauth:grant-type:token-exchange",
+            subject_token: parentToken,
+            subject_token_type: "urn:ietf:params:oauth:token-type:access_token",
+            scope: "base_explorer",
+            resource: `${BOX_API}/2.0/folders/${folderId}`,
+          }),
+        },
+        8000
+      );
+      if (!response.ok) {
+        const status = response.status;
+        await response.body?.cancel().catch(() => {});
+        if (status === 403 || status === 404) throw new BoxListingError("not_found");
+        if (status === 401) throw new BoxListingError("token_rejected");
+        if (status === 429)
+          throw new BoxListingError(
+            "rate_limited",
+            retryAfter(response.headers.get("Retry-After"))
+          );
+        throw new BoxListingError("upstream");
+      }
+      const data = record(await listingJson(response));
+      const restrictions = data.restricted_to;
+      if (
+        !isBoxBearer(data.access_token) ||
+        data.access_token === parentToken ||
+        data.token_type !== "bearer" ||
+        data.refresh_token != null ||
+        typeof data.expires_in !== "number" ||
+        !Number.isSafeInteger(data.expires_in) ||
+        data.expires_in <= 0 ||
+        !Array.isArray(restrictions) ||
+        restrictions.length !== 1
+      )
+        throw new BoxListingError("upstream");
+
+      const restriction = record(restrictions[0]);
+      const object = record(restriction.object);
+      if (
+        restriction.scope !== "base_explorer" ||
+        object.type !== "folder" ||
+        object.id !== folderId
+      ) {
+        throw new BoxListingError("upstream");
+      }
+      return data.access_token;
     },
     async revoke(refreshToken: string): Promise<boolean> {
       try {

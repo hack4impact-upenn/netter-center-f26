@@ -5,9 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "bun --watch src/index.ts",
-    "build": "bun build src/index.ts --outdir dist --target bun",
+    "build": "bun build src/index.ts src/box-listing-worker.ts --outdir dist --target bun",
     "start": "bun dist/index.js",
     "test": "bun test",
+    "start:box-listing-worker": "bun --no-env-file src/box-listing-worker.ts",
     "setup": "bun scripts/setup.ts",
     "verify:box-permissions": "bun scripts/verify-box-permissions.ts",
     "lint": "tsc --noEmit",

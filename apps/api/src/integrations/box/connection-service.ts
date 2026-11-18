@@ -1,5 +1,6 @@
 import { BoxOAuthError, createBoxOAuth } from "./oauth";
 import type { BoxConnection, BoxStore } from "./store";
+import { BoxListingError } from "./listing-contract";
 
 type OAuth = ReturnType<typeof createBoxOAuth>;
 const REFRESH_MARGIN_MS = 60_000;
@@ -13,12 +14,48 @@ function publicConnection(connection: BoxConnection | null) {
   };
 }
 
-/** Owns parent OAuth credentials. Only browser navigation and connection metadata cross this interface. */
+/** Owns parent OAuth credentials. The listing interface releases only folder-restricted tokens. */
 export function createBoxConnectionService(
   store: BoxStore,
   oauth: OAuth,
   now = Date.now
 ) {
+  async function refreshConnection(current: BoxConnection | null, force = false) {
+    if (!current) return null;
+    const { userId } = current;
+    if (current.status === "reconnect_required") return current;
+    if (
+      !force &&
+      current.status === "active" &&
+      (current.accessExpiresAt ?? 0) > now() + REFRESH_MARGIN_MS
+    ) {
+      return current;
+    }
+
+    const lease = await store.acquireRefresh(userId, current.id, current.tokenVersion);
+    if (!lease) return store.getConnection(userId);
+
+    let rotated;
+    try {
+      rotated = await oauth.refresh(lease.tokens.refreshToken);
+      // A refresh credential that Box didn't rotate cannot be used again.
+      if (rotated.tokens.refreshToken === lease.tokens.refreshToken) {
+        throw new BoxOAuthError("unavailable");
+      }
+      if (
+        !(await store.completeRefresh(lease, rotated.tokens, rotated.accessExpiresAt))
+      ) {
+        await store.failRefresh(lease);
+        await oauth.revoke(rotated.tokens.refreshToken);
+      }
+    } catch (error) {
+      const cleared = await store.failRefresh(lease);
+      if (cleared && rotated) await oauth.revoke(rotated.tokens.refreshToken);
+      if (!(error instanceof BoxOAuthError)) throw error;
+    }
+    return store.getConnection(userId);
+  }
+
   return {
     async start(userId: string, sessionToken: string) {
       const attempt = await store.createOAuthAttempt(userId, sessionToken);
@@ -60,38 +97,60 @@ export function createBoxConnectionService(
       }
     },
     async status(userId: string) {
-      const current = await store.getConnection(userId);
-      if (!current || current.status === "reconnect_required")
-        return publicConnection(current);
-      if (
-        current.status === "active" &&
-        (current.accessExpiresAt ?? 0) > now() + REFRESH_MARGIN_MS
-      ) {
-        return publicConnection(current);
+      return publicConnection(await refreshConnection(await store.getConnection(userId)));
+    },
+    async folderListingToken(userId: string, folderId: string) {
+      async function granted() {
+        const connection = await store.getFolderConnection(userId, folderId);
+        if (!connection) throw new BoxListingError("not_found");
+        return connection;
       }
-
-      const lease = await store.acquireRefresh(userId, current.id, current.tokenVersion);
-      if (!lease) return publicConnection(await store.getConnection(userId));
-
-      let rotated;
-      try {
-        rotated = await oauth.refresh(lease.tokens.refreshToken);
-        // A refresh credential that Box didn't rotate cannot be used again.
-        if (rotated.tokens.refreshToken === lease.tokens.refreshToken) {
-          throw new BoxOAuthError("unavailable");
-        }
+      async function mint(connection: BoxConnection) {
+        if (connection.status === "refreshing") throw new BoxListingError("refreshing");
+        if (connection.status !== "active")
+          throw new BoxListingError("reconnect_required");
+        const pair = await store.getActiveTokens(
+          userId,
+          connection.id,
+          connection.tokenVersion
+        );
+        if (!pair) throw new BoxListingError("refreshing");
+        const token = await oauth.downscopeFolder(pair.accessToken, folderId);
+        const latest = await granted();
         if (
-          !(await store.completeRefresh(lease, rotated.tokens, rotated.accessExpiresAt))
-        ) {
-          await store.failRefresh(lease);
-          await oauth.revoke(rotated.tokens.refreshToken);
-        }
-      } catch (error) {
-        const cleared = await store.failRefresh(lease);
-        if (cleared && rotated) await oauth.revoke(rotated.tokens.refreshToken);
-        if (!(error instanceof BoxOAuthError)) throw error;
+          latest.id !== connection.id ||
+          latest.tokenVersion !== connection.tokenVersion ||
+          latest.status !== "active"
+        )
+          throw new BoxListingError("refreshing");
+        return token;
       }
-      return publicConnection(await store.getConnection(userId));
+
+      const original = await granted();
+      await refreshConnection(original);
+      const current = await granted();
+      try {
+        return await mint(current);
+      } catch (error) {
+        if (!(error instanceof BoxListingError) || error.code !== "token_rejected")
+          throw error;
+        // Refresh the parent at most once when Box rejects its authorization.
+        const latest = await granted();
+        if (latest.id === current.id && latest.tokenVersion === current.tokenVersion) {
+          await refreshConnection(latest, true);
+        }
+        try {
+          return await mint(await granted());
+        } catch (retryError) {
+          if (
+            retryError instanceof BoxListingError &&
+            retryError.code === "token_rejected"
+          ) {
+            throw new BoxListingError("reconnect_required");
+          }
+          throw retryError;
+        }
+      }
     },
     async disconnect(userId: string) {
       const removed = await store.disconnectUser(userId);

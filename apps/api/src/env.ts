@@ -1,3 +1,4 @@
+import { inspectListingWorker } from "./integrations/box/listing-worker-client";
 import { BOX_ENV_VARS, inspectBoxConfiguration } from "./integrations/box/config";
 
 type EnvVar = {
@@ -59,6 +60,15 @@ export function validateEnv(): void {
   const box = inspectBoxConfiguration();
   if (box.status === "invalid") {
     warnings.push(...box.errors.map((error) => `  - Box unavailable: ${error}`));
+  }
+
+  if (
+    (process.env.BOX_LISTING_WORKER_URL || process.env.BOX_LISTING_WORKER_SECRET) &&
+    !inspectListingWorker()
+  ) {
+    warnings.push(
+      "  - Box listing unavailable: check BOX_LISTING_WORKER_URL and BOX_LISTING_WORKER_SECRET"
+    );
   }
 
   if (warnings.length > 0) {
