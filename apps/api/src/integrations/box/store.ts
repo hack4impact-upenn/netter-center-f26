@@ -143,23 +143,33 @@ export class BoxStore {
     return rows.length ? { state, browserNonce, expiresAt } : null;
   }
 
-  async consumeOAuthAttempt(
+  async claimOAuthAttempt(
     state: string,
     browserNonce: string
-  ): Promise<{ userId: string } | null> {
+  ): Promise<{ userId: string; claim: string } | null> {
     if (!OAUTH_SECRET.test(state) || !OAUTH_SECRET.test(browserNonce)) return null;
     const now = this.now();
+    // Swap the browser-facing state for an internal claim. The remaining row
+    // can still be cancelled while the callback is waiting on Box.
+    const claim = randomBytes(32).toString("base64url");
     const rows = await this.run<{ user_id: string }>(
-      `DELETE FROM box_oauth_attempts
+      `UPDATE box_oauth_attempts SET state_hash = ?
        WHERE state_hash = ? AND browser_nonce_hash = ? AND expires_at > ?
          AND EXISTS (SELECT 1 FROM sessions s
            WHERE s.token = box_oauth_attempts.session_token
              AND s.user_id = box_oauth_attempts.user_id
              AND julianday(s.expires_at) > julianday(?))
        RETURNING user_id`,
-      [hash(state), hash(browserNonce), now, new Date(now).toISOString()]
+      [hash(claim), hash(state), hash(browserNonce), now, new Date(now).toISOString()]
     );
-    return rows[0] ? { userId: rows[0].user_id } : null;
+    return rows[0] ? { userId: rows[0].user_id, claim } : null;
+  }
+
+  async discardOAuthClaim(userId: string, claim: string): Promise<void> {
+    await this.run(
+      "DELETE FROM box_oauth_attempts WHERE user_id = ? AND state_hash = ?",
+      [userId, hash(claim)]
+    );
   }
 
   async getConnection(userId: string): Promise<BoxConnection | null> {
@@ -171,12 +181,15 @@ export class BoxStore {
   }
 
   /** Reconnection preserves grants only for the same Box account. Conflicts return null. */
-  async saveConnection(input: {
-    userId: string;
-    boxUserId: string;
-    tokens: BoxTokenPair;
-    accessExpiresAt: number;
-  }): Promise<BoxConnection | null> {
+  async saveConnection(
+    input: {
+      userId: string;
+      boxUserId: string;
+      tokens: BoxTokenPair;
+      accessExpiresAt: number;
+    },
+    oauthClaim?: string
+  ): Promise<BoxConnection | null> {
     requireId(input.userId, "application user ID");
     requireBoxId(input.boxUserId);
     const existing = await this.getConnection(input.userId);
@@ -185,6 +198,19 @@ export class BoxStore {
     this.requireFutureExpiry(input.accessExpiresAt, now);
     const id = existing?.id ?? randomUUID();
     const version = existing ? existing.tokenVersion + 1 : 0;
+    const claimCondition =
+      oauthClaim === undefined
+        ? "1"
+        : `EXISTS (
+      SELECT 1 FROM box_oauth_attempts a JOIN sessions s
+        ON s.token = a.session_token AND s.user_id = a.user_id
+      WHERE a.user_id = ? AND a.state_hash = ? AND a.expires_at > ?
+        AND julianday(s.expires_at) > julianday(?)
+    )`;
+    const claimParams =
+      oauthClaim === undefined
+        ? []
+        : [input.userId, hash(oauthClaim), now, new Date(now).toISOString()];
     const encrypted = encryptBoxTokens(input.tokens, this.key, {
       connectionId: id,
       userId: input.userId,
@@ -197,6 +223,7 @@ export class BoxStore {
            access_expires_at = ?, token_version = token_version + 1,
            refresh_lock_id = NULL, refresh_expires_at = NULL, updated_at = ?
          WHERE id = ? AND user_id = ? AND box_user_id = ? AND token_version = ?
+           AND ${claimCondition}
          RETURNING *`,
         [
           encrypted,
@@ -206,6 +233,7 @@ export class BoxStore {
           input.userId,
           input.boxUserId,
           existing.tokenVersion,
+          ...claimParams,
         ]
       );
       return rows[0] ? connection(rows[0]) : null;
@@ -214,10 +242,19 @@ export class BoxStore {
       `INSERT INTO box_connections
          (id, user_id, box_user_id, status, tokens_ciphertext, access_expires_at,
           token_version, created_at, updated_at)
-       VALUES (?, ?, ?, 'active', ?, ?, 0, ?, ?)
+       SELECT ?, ?, ?, 'active', ?, ?, 0, ?, ? WHERE ${claimCondition}
        ON CONFLICT(user_id) DO NOTHING
        RETURNING *`,
-      [id, input.userId, input.boxUserId, encrypted, input.accessExpiresAt, now, now]
+      [
+        id,
+        input.userId,
+        input.boxUserId,
+        encrypted,
+        input.accessExpiresAt,
+        now,
+        now,
+        ...claimParams,
+      ]
     );
     return rows[0] ? connection(rows[0]) : null;
   }
@@ -228,6 +265,24 @@ export class BoxStore {
       [connectionId, userId]
     );
     return rows.length === 1;
+  }
+
+  /** Remove local authority first and return the deleted pair for remote revocation. */
+  async disconnectUser(userId: string): Promise<{ tokens: BoxTokenPair | null } | null> {
+    await this.run("DELETE FROM box_oauth_attempts WHERE user_id = ?", [userId]);
+    const [row] = await this.run<ConnectionRow>(
+      "DELETE FROM box_connections WHERE user_id = ? RETURNING *",
+      [userId]
+    );
+    if (!row) return null;
+    if (!row.tokens_ciphertext) return { tokens: null };
+    try {
+      return {
+        tokens: decryptBoxTokens(row.tokens_ciphertext, this.key, tokenContext(row)),
+      };
+    } catch {
+      return { tokens: null };
+    }
   }
 
   /** Trusted provisioning only. A user may use only their own Box connection. */

@@ -277,29 +277,29 @@ describe("Box credential and authorization persistence", () => {
       );
       const attempt = present(await store.createOAuthAttempt("user-1", "session-1"));
       expect(
-        await store.consumeOAuthAttempt(attempt.state, attempt.browserNonce)
-      ).toEqual({ userId: "user-1" });
+        await store.claimOAuthAttempt(attempt.state, attempt.browserNonce)
+      ).toMatchObject({ userId: "user-1" });
     });
 
     it("consumes an attempt once, including competing callbacks", async () => {
       const attempt = present(await store.createOAuthAttempt("user-1", "session-1"));
       const results = await Promise.all([
-        store.consumeOAuthAttempt(attempt.state, attempt.browserNonce),
-        store.consumeOAuthAttempt(attempt.state, attempt.browserNonce),
+        store.claimOAuthAttempt(attempt.state, attempt.browserNonce),
+        store.claimOAuthAttempt(attempt.state, attempt.browserNonce),
       ]);
-      expect(results.filter(Boolean)).toEqual([{ userId: "user-1" }]);
+      expect(results.filter(Boolean)).toMatchObject([{ userId: "user-1" }]);
       expect(
-        await store.consumeOAuthAttempt(attempt.state, attempt.browserNonce)
+        await store.claimOAuthAttempt(attempt.state, attempt.browserNonce)
       ).toBeNull();
     });
 
     it("requires the matching browser nonce without burning a legitimate attempt", async () => {
       const first = present(await store.createOAuthAttempt("user-1", "session-1"));
       const second = present(await store.createOAuthAttempt("user-2", "session-2"));
+      expect(await store.claimOAuthAttempt(first.state, second.browserNonce)).toBeNull();
       expect(
-        await store.consumeOAuthAttempt(first.state, second.browserNonce)
-      ).toBeNull();
-      expect(await store.consumeOAuthAttempt(first.state, first.browserNonce)).toEqual({
+        await store.claimOAuthAttempt(first.state, first.browserNonce)
+      ).toMatchObject({
         userId: "user-1",
       });
     });
@@ -308,7 +308,7 @@ describe("Box credential and authorization persistence", () => {
       const attempt = present(await store.createOAuthAttempt("user-1", "session-1"));
       now = attempt.expiresAt;
       expect(
-        await store.consumeOAuthAttempt(attempt.state, attempt.browserNonce)
+        await store.claimOAuthAttempt(attempt.state, attempt.browserNonce)
       ).toBeNull();
       await store.createOAuthAttempt("user-1", "session-1");
       expect(db.query("SELECT created_at FROM box_oauth_attempts").all()).toEqual([
@@ -326,13 +326,13 @@ describe("Box credential and authorization persistence", () => {
           ]);
         else db.run("DELETE FROM sessions WHERE token = 'session-1'");
         expect(
-          await store.consumeOAuthAttempt(attempt.state, attempt.browserNonce)
+          await store.claimOAuthAttempt(attempt.state, attempt.browserNonce)
         ).toBeNull();
       }
     );
 
     it("returns null for malformed callback inputs", async () => {
-      expect(await store.consumeOAuthAttempt("bad-state", "bad-nonce")).toBeNull();
+      expect(await store.claimOAuthAttempt("bad-state", "bad-nonce")).toBeNull();
       await expect(store.createOAuthAttempt("user-1", "")).rejects.toThrow(
         "session token"
       );
@@ -593,10 +593,10 @@ describe("independent SQLite clients", () => {
     expect(leases.filter(Boolean)).toHaveLength(1);
     const attempt = present(await first.createOAuthAttempt("user-1", "session-1"));
     const callbacks = await Promise.all([
-      first.consumeOAuthAttempt(attempt.state, attempt.browserNonce),
-      second.consumeOAuthAttempt(attempt.state, attempt.browserNonce),
+      first.claimOAuthAttempt(attempt.state, attempt.browserNonce),
+      second.claimOAuthAttempt(attempt.state, attempt.browserNonce),
     ]);
-    expect(callbacks.filter(Boolean)).toEqual([{ userId: "user-1" }]);
+    expect(callbacks.filter(Boolean)).toMatchObject([{ userId: "user-1" }]);
   });
 
   it("does not recreate credentials if a disconnect races a reconnection update", async () => {
