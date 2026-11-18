@@ -67,6 +67,8 @@ folder listing so a new server-auth Box application can replace OAuth later.
 
 ## 4. Authorized, paginated folder metadata listing
 
+- Implemented with exact folder grants, verified token restrictions, and a
+  separately runnable metadata worker.
 - Add `GET /api/box/folders/:folderId/files` with application authentication,
   exact folder/connection authorization, strict pagination validation, and
   `Cache-Control: no-store`.
@@ -128,6 +130,10 @@ metadata response types, pagination, and future requirement-checking logic.
 
 ## Verification status
 
+- Step 4 adds 70 listing and worker tests. All 378 tests pass. The build and
+  focused strict TypeScript check pass. The built API and worker also passed a
+  smoke test as separate processes over HTTP, using SQLite and simulated Box
+  traffic. Live verification of the Box permission policy remains in step 5.
 - Step 3 implemented with 39 route tests through Hono, local SQLite, and a fake
   Box transport. They cover session expiry, callback validation and replay,
   cancellation during code exchange, refresh concurrency and rotation, and

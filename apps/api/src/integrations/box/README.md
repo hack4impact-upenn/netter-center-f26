@@ -7,9 +7,9 @@ an account that already has access to the folders they need to inspect.
 
 ## Current implementation
 
-Steps 1–3 provide configuration validation, a permissions probe, encrypted token
-persistence, and public routes for the OAuth connection lifecycle. Folder
-listing follows in step 4. See [the implementation steps](../../../docs/box-integration-plan.md).
+Steps 1–4 provide configuration validation, a permissions probe, encrypted token
+persistence, OAuth routes, and paginated folder metadata listing.
+See [the implementation steps](../../../docs/box-integration-plan.md).
 
 This work is limited to backend Box integration. The production frontend is
 owned by another team; `apps/web` is outside this work's scope. Step 5 will add
@@ -81,6 +81,87 @@ starts a server-side refresh when the access token has at most one minute
 remaining. A concurrent status request may see `refreshing` while the first
 refresh finishes. A rejected or uncertain refresh returns `reconnect_required`.
 All connection routes send `Cache-Control: no-store` and omit Box tokens.
+
+## List files in an authorized folder
+
+Call `GET /api/box/folders/:folderId/files` with the application's Bearer
+session. The caller needs an exact D1 grant for the folder on their own Box
+connection. Box must also permit that account to access the folder. Provision
+grants through trusted D1 operations or the backend `grantFolder` helper.
+
+```sh
+curl --get "http://localhost:3001/api/box/folders/123456789/files" \
+  --header "Authorization: Bearer ${APP_SESSION_TOKEN}" \
+  --data-urlencode "limit=100"
+```
+
+```json
+{
+  "folderId": "123456789",
+  "folderName": "Clearance documents",
+  "files": [
+    {
+      "id": "987654321",
+      "name": "Clearance.pdf",
+      "createdAt": "2026-11-17T12:00:00-05:00",
+      "modifiedAt": null
+    }
+  ],
+  "nextMarker": null
+}
+```
+
+`limit` defaults to 100 and accepts an integer from 1 through 1,000. When
+`nextMarker` is present, send it URL-encoded as the next request's `marker`
+with the same folder and page size. Continue until it is `null`. A page that
+contains only folders or web links has an empty `files` array and may still
+have a next marker. Listings contain only direct-child files. Names and Box
+timestamps are preserved, with `null` for missing dates. These timestamps
+describe creation and updates on Box and may differ from the submission date.
+
+Responses use `Cache-Control: no-store`. Failure responses keep Box errors
+and credentials private. Use the connection status endpoint to check a
+connection that needs attention.
+
+| Status        | Meaning                                                                                                    |
+| ------------- | ---------------------------------------------------------------------------------------------------------- |
+| `400`         | Invalid folder ID, pagination input, or marker rejected by Box                                             |
+| `401`         | Missing or invalid application session                                                                     |
+| `404`         | No matching grant, or Box denied access or could not find the folder                                       |
+| `409`         | `reconnect_required` for the granted connection                                                            |
+| `503`         | Listing unavailable, a refresh is in progress, or Box rate limited the request (may include `Retry-After`) |
+| `502` / `504` | Upstream listing failure or timeout                                                                        |
+
+## Run the private listing worker
+
+Generate a dedicated worker secret with `openssl rand -hex 32`. Set
+`BOX_LISTING_WORKER_URL` to the worker's origin and
+`BOX_LISTING_WORKER_SECRET` to the generated secret in `apps/api/.env`.
+The worker and the API use the same worker secret. Only the API gets the
+Box OAuth credentials, token encryption key, and Cloudflare D1 credentials.
+
+For local development, set `BOX_LISTING_WORKER_URL=http://127.0.0.1:3002`.
+From `apps/api`, enter the shared secret at the prompt and start the worker
+in a separate process:
+
+```sh
+read -r -s BOX_LISTING_WORKER_SECRET
+export BOX_LISTING_WORKER_SECRET
+bun run start:box-listing-worker
+```
+
+The worker command disables dotenv loading and binds to loopback by default.
+For deployment, run `bun --no-env-file dist/box-listing-worker.js` from the
+API build directory's parent in a separate service or container. Set its
+`NODE_ENV=production`, `PORT`, and `BOX_LISTING_WORKER_SECRET`. Give the worker
+its own filesystem and environment, without the API's `.env` or secret mounts.
+Put it behind a private HTTPS origin reachable by the API. The worker's single
+POST operation authenticates the API before parsing the request. Configure
+logging to omit request bodies and Authorization headers on the private origin.
+
+Complete the synthetic Box permission experiment before using the listing route
+with student folders. This includes verifying both folder-name lookup and item
+listing with the same restricted scope in your Box tenant.
 
 ## Persistent authorization and token storage
 
@@ -173,9 +254,13 @@ storage encryption key, and downscoping belong inside a private credential
 component, separate from the public listing service. Ordinary users must not
 be able to choose a token scope, substitute another connection, or mint tokens.
 
-The credential service is a server-only module in the API process. The folder
-listing component needs a separate process and a restricted-token interface
-before it can provide process-level isolation from parent tokens.
+The credential service runs in the API process. It checks the exact grant
+before requesting a token and checks the grant and credential version again
+before dispatch. It requires Box's response to identify exactly the
+`base_explorer` restriction on the requested folder. The separate worker
+receives that token, the folder ID, and pagination input. It requests only
+`id,name` for the folder and `id,type,name,created_at,modified_at` for its
+items. The API validates and projects the worker response again before serving it.
 Even with isolation, the credential component is privileged. The feature does
 not alter the Box account holder's existing access through Box itself.
 
@@ -267,4 +352,5 @@ bindings. Box requires a new server application; an OAuth app cannot be converte
 - [Downscoping](https://developer.box.com/guides/authentication/tokens/downscope/)
 - [Explorer scopes](https://developer.box.com/guides/embed/ui-elements/explorer/)
 - [Folder items](https://developer.box.com/reference/get-folders-id-items/)
+- [Folder information](https://developer.box.com/reference/get-folders-id/)
 - [Thumbnail endpoint](https://developer.box.com/reference/get-files-id-thumbnail-id/)
