@@ -84,9 +84,7 @@ function page(content: ReturnType<typeof html>) {
     </html>`;
 }
 
-const signIn = html`<form method="post" action="/signin">
-  <button>Sign in with Box</button>
-</form>`;
+const signIn = html`<p><a href="/signin">Sign in with Box</a></p>`;
 const navigation = html`<p><a href="/">All files and folders</a></p>
   <form method="post" action="/signout"><button>Sign out</button></form>`;
 
@@ -109,7 +107,7 @@ export function createLocalBoxApp(
     c.header("X-Content-Type-Options", "nosniff");
     c.header(
       "Content-Security-Policy",
-      "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; frame-ancestors 'none'; form-action 'self' https://account.box.com"
+      "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
     );
     // Refuse alternate hosts and cross-origin forms on the loopback listener.
     if (
@@ -121,7 +119,11 @@ export function createLocalBoxApp(
     await next();
   });
 
-  app.post("/signin", (c) => {
+  app.get("/signin", (c) => {
+    // Start OAuth through a navigation because Chrome can block cross-origin form redirects.
+    if (c.req.method !== "GET" || c.req.header("Sec-Fetch-Site") !== "same-origin") {
+      return c.text("Start sign-in from the local viewer.", 403);
+    }
     attempt = {
       state: secret(),
       nonce: secret(),

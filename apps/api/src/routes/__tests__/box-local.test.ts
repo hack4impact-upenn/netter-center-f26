@@ -83,7 +83,9 @@ function fixture() {
     return cookie.split(";")[0] ?? "";
   }
   async function start() {
-    const response = await post("/signin");
+    const response = await app.request(origin + "/signin", {
+      headers: { "Sec-Fetch-Site": "same-origin" },
+    });
     expect(response.status).toBe(303);
     const authorization = new URL(response.headers.get("Location") ?? "");
     expect(authorization.origin).toBe("https://account.box.com");
@@ -141,11 +143,19 @@ describe("standalone Box viewer", () => {
   it("blocks browser requests from other origins and protects folder listings before OAuth", async () => {
     const f = fixture();
     expect((await f.get("/folders/456")).status).toBe(303);
-    expect(await (await f.get("/")).text()).toContain("Sign in with Box");
+    expect(await (await f.get("/")).text()).toContain(
+      '<a href="/signin">Sign in with Box</a>'
+    );
     expect((await f.app.request("http://other.test/", {})).status).toBe(403);
+    const crossSiteSignIn = await f.app.request(origin + "/signin", {
+      headers: { "Sec-Fetch-Site": "cross-site" },
+    });
+    expect(crossSiteSignIn.status).toBe(403);
+    expect(crossSiteSignIn.headers.get("Set-Cookie")).toBeNull();
+    expect((await f.get("/signin")).status).toBe(403);
     expect(
       (
-        await f.app.request(origin + "/signin", {
+        await f.app.request(origin + "/signout", {
           method: "POST",
           headers: { Origin: "http://other.test" },
         })
