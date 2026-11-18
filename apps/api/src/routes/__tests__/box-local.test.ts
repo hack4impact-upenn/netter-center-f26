@@ -10,7 +10,7 @@ const config = {
   redirectUri: origin + callback,
 };
 
-function fixture() {
+function fixture({ secondStudentPageFails = false } = {}) {
   let now = Date.now();
   const oauthCalls: string[] = [];
   const metadataCalls: string[] = [];
@@ -41,11 +41,39 @@ function fixture() {
         metadataCalls.push(url);
         const path = new URL(url);
         const id = path.pathname.split("/")[3];
-        if (!path.pathname.endsWith("/items"))
-          return Response.json({ id, name: id === "0" ? "All Files" : "<Nested>" });
+        if (!path.pathname.endsWith("/items")) {
+          const name =
+            id === "0" ? "All Files" : id === "457" ? "Smith_Jane" : "<Nested>";
+          return Response.json({ id, name });
+        }
         expect(path.searchParams.get("fields")).toBe(
           "id,type,name,created_at,modified_at"
         );
+        if (id === "457") {
+          const marker = path.searchParams.get("marker");
+          if (marker === "student-next") {
+            if (secondStudentPageFails) return new Response(null, { status: 503 });
+            return Response.json({
+              entries: [
+                { id: "9", name: "PATCH.pdf", type: "file" },
+                { id: "10", name: "SDP.pdf", type: "file" },
+                { id: "11", name: "test.pdf", type: "file" },
+              ],
+              next_marker: null,
+            });
+          }
+          if (marker !== null) return new Response(null, { status: 400 });
+          return Response.json({
+            entries: [
+              { id: "1", name: "PCA.pdf", type: "file" },
+              { id: "2", name: "MR.pdf", type: "file" },
+              { id: "3", name: "FBI.PDF", type: "file" },
+              { id: "4", name: "FBI.pdf", type: "folder" },
+              { id: "5", name: "INTL.pdf", type: "web_link" },
+            ],
+            next_marker: "student-next",
+          });
+        }
         return id === "0"
           ? Response.json({
               entries: [{ id: "456", name: "<Nested>", type: "folder" }],
@@ -188,12 +216,13 @@ describe("standalone Box viewer", () => {
     const rootHtml = await root.text();
     expect(rootHtml).toContain('href="/folders/456"');
     expect(rootHtml).toContain('href="/?marker=cursor%2B%2F%3D"');
+    expect(rootHtml).not.toContain("Requirements for");
     await f.get("/?marker=cursor%2B%2F%3D", session);
     expect(f.metadataCalls.at(-1)).toContain("marker=cursor%2B%2F%3D");
     const nested = await f.get("/folders/456", session);
     const output = await nested.text();
-    expect(output).toContain("&lt;Nested&gt;");
-    expect(output).toContain("&lt;img src=x&gt;.pdf");
+    expect(output).toContain("Requirements for &lt;Nested&gt;");
+    expect(output.split("Unidentified files")[1]).toContain("&lt;img src=x&gt;.pdf");
     expect(output).not.toMatch(
       /<img|ignored web link|private-(link|download|access|refresh|client)/
     );
@@ -202,6 +231,62 @@ describe("standalone Box viewer", () => {
     expect((await f.get("/folders/456?fields=shared_link", session)).status).toBe(400);
     expect((await f.get("/files/789/content", session)).status).toBe(404);
     expect(f.metadataCalls).toHaveLength(callCount);
+  });
+
+  it("checks exact file names across the student folder from either displayed page", async () => {
+    const f = fixture();
+    const { session } = await f.connect();
+    const path = "/folders/457";
+    const first = await f.get(path, session);
+    expect(first.status).toBe(200);
+    const output = await first.text();
+    const [listing, requirements] = output.split("<h3>Requirements for Jane Smith</h3>");
+    expect(listing).toContain("File: PCA.pdf");
+    expect(listing).toContain(`href="${path}?marker=student-next"`);
+    expect(listing).not.toContain("File: PATCH.pdf");
+    expect(requirements).toContain("Required for everyone");
+    expect(requirements).toContain("Depends");
+    const statuses = Array.from(
+      requirements?.matchAll(/<code>([^<]+)<\/code>\) —\s+<strong>([^<]+)<\/strong>/g) ??
+        [],
+      ([, filename, status]) => [filename, status]
+    );
+    expect(statuses).toEqual([
+      ["PCA.pdf", "Met"],
+      ["PATCH.pdf", "Met"],
+      ["FBI.pdf", "Missing"],
+      ["MR.pdf", "Met"],
+      ["SDP.pdf", "Met"],
+      ["INTL.pdf", "Missing"],
+    ]);
+    const unidentified = requirements?.split("Unidentified files")[1];
+    expect(unidentified?.match(/<li>[^<]+<\/li>/g)).toEqual([
+      "<li>FBI.PDF</li>",
+      "<li>test.pdf</li>",
+    ]);
+    expect(f.metadataCalls).toHaveLength(3);
+
+    const second = await f.get(path + "?marker=student-next", session);
+    expect(second.status).toBe(200);
+    const [secondListing, secondRequirements] = (await second.text()).split(
+      "<h3>Requirements for Jane Smith</h3>"
+    );
+    expect(secondListing).toContain("File: PATCH.pdf");
+    expect(secondRequirements).toBe(requirements);
+    expect(f.metadataCalls).toHaveLength(6);
+    expect((await f.get(path + "?marker=invalid", session)).status).toBe(400);
+  });
+
+  it("keeps the file list visible without reporting partial requirement statuses", async () => {
+    const f = fixture({ secondStudentPageFails: true });
+    const { session } = await f.connect();
+    const response = await f.get("/folders/457", session);
+    expect(response.status).toBe(200);
+    const output = await response.text();
+    expect(output).toContain("File: PCA.pdf");
+    expect(output).toContain("Could not check all files in this folder.");
+    expect(output).not.toContain("<strong>Missing</strong>");
+    expect(output).not.toContain("<strong>Met</strong>");
   });
 
   it("forgets sessions on restart or expiry and revokes on sign-out", async () => {

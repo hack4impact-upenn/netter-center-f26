@@ -19,6 +19,14 @@ From `apps/api`, run `bun run dev:box` and open
 The viewer opens the root of the signed-in account. Click a folder to browse
 inside it and **Next page** to see additional names.
 
+The local viewer also shows a checklist for each folder you open. Folder names
+in `LastName_FirstName` format appear as `FirstName LastName` in the checklist.
+The **Required for everyone** group checks for `PCA.pdf`, `PATCH.pdf`, and
+`FBI.pdf`. The **Depends** group checks for `MR.pdf`, `SDP.pdf`, and `INTL.pdf`.
+Both groups use **Met** or **Missing** based on exact, case-sensitive filenames
+across every page of the folder's direct children. Other filenames appear under
+**Unidentified files**.
+
 Set `BOX_CLIENT_ID`, `BOX_CLIENT_SECRET`, and `BOX_REDIRECT_URI` in
 `apps/api/.env` if needed. Register the exact callback in the Box Developer
 Console. The default local callback is

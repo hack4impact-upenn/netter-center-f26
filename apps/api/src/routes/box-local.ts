@@ -2,7 +2,10 @@ import { randomBytes } from "node:crypto";
 import { Hono, type Context } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { html } from "hono/html";
-import { readBoxFolderMetadata } from "../integrations/box/folder-metadata";
+import {
+  readBoxFolderItems,
+  readBoxFolderMetadata,
+} from "../integrations/box/folder-metadata";
 import {
   BoxListingError,
   isBoxId,
@@ -17,6 +20,27 @@ const ATTEMPT_COOKIE = "netter_box_local_attempt";
 const SESSION_COOKIE = "netter_box_local_session";
 const PAGE_SIZE = 100;
 const cookie = { httpOnly: true, sameSite: "Lax", path: "/" } as const;
+const REQUIREMENT_GROUPS = [
+  {
+    title: "Required for everyone",
+    files: [
+      { label: "Pennsylvania Child Abuse", filename: "PCA.pdf" },
+      { label: "Pennsylvania Access to Criminal History Search", filename: "PATCH.pdf" },
+      { label: "FBI Fingerprint", filename: "FBI.pdf" },
+    ],
+  },
+  {
+    title: "Depends",
+    files: [
+      { label: "Mandated Reporter", filename: "MR.pdf" },
+      { label: "SDP Code of Conduct", filename: "SDP.pdf" },
+      { label: "International Affidavit", filename: "INTL.pdf" },
+    ],
+  },
+];
+const REQUIREMENT_FILENAMES = new Set(
+  REQUIREMENT_GROUPS.flatMap(({ files }) => files.map(({ filename }) => filename))
+);
 
 type OAuth = Pick<
   ReturnType<typeof createBoxOAuth>,
@@ -75,6 +99,14 @@ function page(content: ReturnType<typeof html>) {
             margin-block: 0.35em;
             white-space: pre-wrap;
           }
+          .requirement-group {
+            border: 1px solid #888;
+            margin-block: 0.75rem;
+            padding-inline: 1rem;
+          }
+          .requirement-group li {
+            white-space: normal;
+          }
         </style>
       </head>
       <body>
@@ -87,6 +119,67 @@ function page(content: ReturnType<typeof html>) {
 const signIn = html`<p><a href="/signin">Sign in with Box</a></p>`;
 const navigation = html`<p><a href="/">All files and folders</a></p>
   <form method="post" action="/signout"><button>Sign out</button></form>`;
+
+function readFolderEntries(rawEntries: unknown[]) {
+  const entries = [];
+  for (const raw of rawEntries) {
+    const { type, id, name } = record(raw);
+    if (type === "web_link") continue;
+    if (
+      (type !== "file" && type !== "folder") ||
+      !isBoxId(id) ||
+      typeof name !== "string" ||
+      !name
+    ) {
+      throw new BoxListingError("upstream");
+    }
+    entries.push({ type, id, name });
+  }
+  return entries;
+}
+
+function requirementsView(folderName: string, fileNames?: Set<string>) {
+  const [lastName, firstName, extra] = folderName.split("_");
+  const studentName =
+    lastName?.trim() && firstName?.trim() && extra === undefined
+      ? `${firstName} ${lastName}`
+      : folderName;
+  const heading = html`<h3>Requirements for ${studentName}</h3>`;
+  if (!fileNames) {
+    return html`<section>
+      ${heading}
+      <p>Could not check all files in this folder. Try again.</p>
+    </section>`;
+  }
+
+  const unidentified = Array.from(fileNames).filter(
+    (name) => !REQUIREMENT_FILENAMES.has(name)
+  );
+  return html`<section>
+    ${heading}
+    ${REQUIREMENT_GROUPS.map(
+      ({ title, files }) =>
+        html`<section class="requirement-group">
+          <h4>${title}</h4>
+          <ul>
+            ${files.map(
+              ({ label, filename }) =>
+                html`<li>
+                  ${label} (<code>${filename}</code>) —
+                  <strong>${fileNames.has(filename) ? "Met" : "Missing"}</strong>
+                </li>`
+            )}
+          </ul>
+        </section>`
+    )}
+    ${unidentified.length
+      ? html`<h4>Unidentified files</h4>
+          <ul>
+            ${unidentified.map((name) => html`<li>${name}</li>`)}
+          </ul>`
+      : ""}
+  </section>`;
+}
 
 export function createLocalBoxApp(
   origin: string,
@@ -231,34 +324,58 @@ export function createLocalBoxApp(
       );
     }
 
+    const canBrowse = () => session === active && active.accessExpiresAt > now();
+    const input = { folderId, limit: PAGE_SIZE, marker: suppliedMarker ?? undefined };
+    const token = active.tokens.accessToken;
     try {
-      const { folderName, entries, nextMarker } = await readBoxFolderMetadata(
-        { folderId, limit: PAGE_SIZE, marker: suppliedMarker ?? undefined },
-        active.tokens.accessToken,
-        request
-      );
-      if (session !== active || active.accessExpiresAt <= now())
-        return c.redirect("/", 303);
+      const displayedPage = await readBoxFolderMetadata(input, token, request);
+      const { folderName, nextMarker } = displayedPage;
+      if (!canBrowse()) return c.redirect("/", 303);
       if (
         nextMarker !== null &&
         (!isBoxMarker(nextMarker) || nextMarker === suppliedMarker)
       ) {
         throw new BoxListingError("upstream");
       }
-      const items = [];
-      for (const raw of entries) {
-        const item = record(raw);
-        if (item.type === "web_link") continue;
-        if (!isBoxId(item.id) || typeof item.name !== "string" || !item.name) {
-          throw new BoxListingError("upstream");
+      const entries = readFolderEntries(displayedPage.entries);
+      const items = entries.map(({ type, id, name }) =>
+        type === "folder"
+          ? html`<li>Folder: <a href="/folders/${id}">${name}</a></li>`
+          : html`<li>File: ${name}</li>`
+      );
+
+      let requirements;
+      if (folderId !== "0") {
+        try {
+          const fileNames = new Set<string>();
+          const visitedMarkers = new Set<string>();
+          let marker: string | undefined;
+          // Scan from the first page, reusing whichever page the browser is viewing.
+          while (true) {
+            const isDisplayedPage = marker === input.marker;
+            const currentPage = isDisplayedPage
+              ? displayedPage
+              : await readBoxFolderItems({ ...input, marker }, token, request);
+            if (!canBrowse()) return c.redirect("/", 303);
+            for (const entry of isDisplayedPage
+              ? entries
+              : readFolderEntries(currentPage.entries)) {
+              if (entry.type === "file") fileNames.add(entry.name);
+            }
+            const next = currentPage.nextMarker;
+            if (next === null) break;
+            if (!isBoxMarker(next) || visitedMarkers.has(next))
+              throw new BoxListingError("upstream");
+            visitedMarkers.add(next);
+            marker = next;
+          }
+          requirements = requirementsView(folderName, fileNames);
+        } catch (error) {
+          if (!(error instanceof BoxListingError) || error.code === "token_rejected")
+            throw error;
+          if (!canBrowse()) return c.redirect("/", 303);
+          requirements = requirementsView(folderName);
         }
-        if (item.type === "folder") {
-          items.push(
-            html`<li>Folder: <a href="/folders/${item.id}">${item.name}</a></li>`
-          );
-        } else if (item.type === "file") {
-          items.push(html`<li>File: ${item.name}</li>`);
-        } else throw new BoxListingError("upstream");
       }
       const path = folderId === "0" ? "/" : "/folders/" + folderId;
       return c.html(
@@ -283,7 +400,8 @@ export function createLocalBoxApp(
                     >Next page</a
                   >
                 </p>`
-              : ""} `
+              : ""}
+            ${requirements ?? ""}`
         )
       );
     } catch (error) {
