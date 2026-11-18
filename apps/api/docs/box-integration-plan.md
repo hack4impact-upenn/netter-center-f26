@@ -130,6 +130,18 @@ metadata response types, pagination, and future requirement-checking logic.
 
 ## Verification status
 
+- Step 5 adds a development-only browser test page, a live-permission enablement
+  setting that defaults off, and the frontend handoff in the Box README. All
+  393 Bun tests pass, including 15 added for the test routes and permission
+  checks. Chrome at 1280 px and 375 px passed the built page flow with SQLite
+  and simulated Box traffic. Browser checks covered sign-in, OAuth callback,
+  refresh, pagination, empty folders, errors and incomplete results, safe
+  filename rendering, disconnect, and sign-out. The expected 404/502 responses
+  were the only browser Console errors.
+- The live permission probe stopped before making Box requests because local
+  synthetic fixture confirmation and credentials were absent. Live Box OAuth
+  and permission enforcement still require a user-authorized test account and
+  synthetic folders and PDF. Listing remains disabled without confirmation.
 - Step 4 adds 70 listing and worker tests. All 378 tests pass. The build and
   focused strict TypeScript check pass. The built API and worker also passed a
   smoke test as separate processes over HTTP, using SQLite and simulated Box

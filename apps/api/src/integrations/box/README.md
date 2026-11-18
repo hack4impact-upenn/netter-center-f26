@@ -7,8 +7,9 @@ an account that already has access to the folders they need to inspect.
 
 ## Current implementation
 
-Steps 1–4 provide configuration validation, a permissions probe, encrypted token
-persistence, OAuth routes, and paginated folder metadata listing.
+The backend provides configuration validation, a permissions probe, encrypted
+token persistence, OAuth routes, paginated folder metadata listing, and a local
+browser test page.
 See [the implementation steps](../../../docs/box-integration-plan.md).
 
 This work is limited to backend Box integration. The production frontend is
@@ -119,6 +120,46 @@ have a next marker. Listings contain only direct-child files. Names and Box
 timestamps are preserved, with `null` for missing dates. These timestamps
 describe creation and updates on Box and may differ from the submission date.
 
+To fetch every page with curl and jq, set `API_ORIGIN`, `FOLDER_ID`, and
+`APP_SESSION_TOKEN` in your shell. Use the app session token from
+`POST /api/auth/login` for the test account. Running the loop prints one JSON
+object per page. Treat the run as complete only when it exits successfully.
+
+```sh
+(
+  set -eu
+  marker=''
+  newline='
+'
+  seen=$newline
+  while :; do
+    set -- --data-urlencode 'limit=100'
+    if [ -n "$marker" ]; then
+      set -- "$@" --data-urlencode "marker=$marker"
+    fi
+    page=$(curl --fail --silent --show-error --get \
+      --header "Authorization: Bearer $APP_SESSION_TOKEN" \
+      "$@" "$API_ORIGIN/api/box/folders/$FOLDER_ID/files")
+    printf '%s\n' "$page"
+    next=$(printf '%s\n' "$page" | jq -r '.nextMarker // empty')
+    [ -n "$next" ] || break
+    case "$seen" in
+      *"$newline$next$newline"*)
+        printf '%s\n' 'Box repeated a pagination marker.' >&2
+        exit 1
+        ;;
+    esac
+    seen="$seen$next$newline"
+    marker=$next
+  done
+)
+```
+
+In Postman, use Bearer Token authorization with the app session. Set `limit`
+and `marker` in the Params table so Postman encodes the marker. Omit `marker` on
+the first request, then use each response's `nextMarker` until it is `null`.
+The connection route table and this response shape are the frontend handoff.
+
 Responses use `Cache-Control: no-store`. Failure responses keep Box errors
 and credentials private. Use the connection status endpoint to check a
 connection that needs attention.
@@ -161,7 +202,46 @@ logging to omit request bodies and Authorization headers on the private origin.
 
 Complete the synthetic Box permission experiment before using the listing route
 with student folders. This includes verifying both folder-name lookup and item
-listing with the same restricted scope in your Box tenant.
+listing with the same restricted scope in your Box tenant. Leave
+`BOX_LISTING_PERMISSIONS_VERIFIED=false` until the probe succeeds. Record the
+sanitized result, set `BOX_LISTING_PERMISSIONS_VERIFIED=true` on the API, and
+restart it. This is an operator confirmation of a completed live check. Reset
+it and repeat the probe after relevant Box app scope or policy changes. The API
+returns `503 unavailable` for listing while the setting is off.
+
+## Local browser test page
+
+Set `NODE_ENV=development` and `BOX_ENABLE_TEST_PAGE=true` in `apps/api/.env`.
+Start the API and worker, then open
+[the Box test page](http://localhost:3001/api/box/test) on the same hostname
+registered in `BOX_REDIRECT_URI`. The page and its script are available only
+with both development settings.
+
+1. Sign in with a test app account. Select **Connect Box**, follow the link in
+   the new tab, and use **Check connection** after returning from Box.
+2. With a trusted D1 client, grant the test user the exact synthetic folder IDs.
+   This example grants one folder through that user's active connection.
+
+   ```sql
+   INSERT INTO box_folder_access (user_id, box_folder_id, connection_id, created_at)
+   SELECT user_id, '<synthetic-folder-id>', id, unixepoch() * 1000
+   FROM box_connections
+   WHERE user_id = '<test-app-user-id>' AND status = 'active'
+   ON CONFLICT (user_id, box_folder_id) DO NOTHING;
+   ```
+
+3. Enter the granted IDs and select **List files**. Confirm pagination with a
+   folder that spans pages, compare the complete lists with Box, and try an
+   ungranted ID to check the failure message. The page lists only file names
+   and each containing folder's name and ID.
+4. To test refresh with a live connection, check it after the access token
+   expires or move its stored expiry into the past on the test database. Confirm
+   the status becomes active with a renewed expiry and listing still works.
+5. Select **Disconnect Box** and confirm the revocation result. Check that the
+   connection is absent and the test grants have been removed. Sign out.
+
+Sign-in credentials go to the existing app login endpoint. The test page keeps
+the app session in memory and sends it through the Authorization header.
 
 ## Persistent authorization and token storage
 
@@ -305,9 +385,9 @@ bun run verify:box-permissions
 ```
 
 The script checks fixture identity and access with the parent token, exchanges
-it for exactly `base_explorer` on the fixture folder, verifies listing including
-names and timestamps, and requires downloads, thumbnails, preview capabilities,
-and outside-folder listing to be denied. Metadata responses containing preview
+it for exactly `base_explorer` on the fixture folder, verifies folder name lookup
+and listing including names and timestamps, and requires downloads, thumbnails,
+preview capabilities, and outside-folder listing to be denied. Metadata responses containing preview
 capabilities fail the check. Explicit 403/404 denials count only after positive
 controls succeed. Authentication errors, network errors, rate limits, invalid
 JSON, missing fixtures, and pending thumbnails never count as successful denials.
