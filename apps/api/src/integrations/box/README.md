@@ -7,9 +7,8 @@ an account that already has access to the folders they need to inspect.
 
 ## Current implementation
 
-Step 1 provides local configuration validation and an opt-in permissions
-experiment. Step 2 adds the D1 authorization schema, encrypted token persistence,
-and refresh coordination. OAuth connection routes follow in step 3, and folder
+Steps 1–3 provide configuration validation, a permissions probe, encrypted token
+persistence, and public routes for the OAuth connection lifecycle. Folder
 listing follows in step 4. See [the implementation steps](../../../docs/box-integration-plan.md).
 
 This work is limited to backend Box integration. The production frontend is
@@ -50,9 +49,8 @@ verifies the experiment's logic, not Box's actual enforcement.
    BOX_TOKEN_ENCRYPTION_KEY=<generated key>
    ```
 
-The redirect URI must match the registered value exactly. No manual access or
-refresh token belongs in the normal application configuration: the eventual
-OAuth callback will acquire and persist those. The client ID and client secret
+The redirect URI must match the registered value exactly. The OAuth callback
+acquires and persists tokens automatically. The client ID and client secret
 cannot obtain a user token without user authorization.
 
 Box remains disabled if entirely unconfigured. Partial/invalid configuration
@@ -60,6 +58,29 @@ produces safe startup warnings without stopping unrelated API features.
 Consumers must require `inspectBoxConfiguration().status === "ready"` before
 using Box. Required D1 environment variables are unchanged; see the
 [database setup guide](../database/README.md).
+
+## Connection routes
+
+| Method and path               | Behavior                                                                                                                                                                                                                                                                                                                                   |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `POST /api/box/connect`       | Send a live app Bearer session with an empty request. The response sets an HttpOnly browser cookie and returns `{ "authorizationUrl": "…" }`.                                                                                                                                                                                              |
+| `GET /api/box/oauth/callback` | Box sends the browser here after authorization. The API matches state and the browser cookie, checks the initiating session, exchanges the code with Box, and verifies the account through `/users/me`. A 303 redirect strips the code and state from the result URL.                                                                      |
+| `GET /api/box/connection`     | Send a live app Bearer session. Returns `{ "connection": null }` or a connection with `boxUserId`, `status`, and nullable `accessExpiresAt` in Unix milliseconds.                                                                                                                                                                          |
+| `DELETE /api/box/connection`  | Send a live app Bearer session with an empty request. Cancels pending attempts, removes the connection and folder grants, and attempts Box revocation. Returns `{ "disconnected": true, "revocationConfirmed": true }` when Box confirms revocation or no local connection existed. A false value means revocation could not be confirmed. |
+
+Start the flow by calling `/connect` from the browser that will navigate to
+`authorizationUrl`. Use the API's own origin or an application reverse proxy
+on the callback's hostname so the browser stores the cookie for that host.
+The cookie supports one outstanding authorization flow per browser, expires
+after ten minutes, and uses `SameSite=Lax` for the top-level Box redirect.
+HTTPS uses a Secure, host-only cookie. The callback result page is informational.
+Use the authenticated connection endpoint to confirm the connection.
+
+Status returns `active`, `refreshing`, or `reconnect_required`. Checking status
+starts a server-side refresh when the access token has at most one minute
+remaining. A concurrent status request may see `refreshing` while the first
+refresh finishes. A rejected or uncertain refresh returns `reconnect_required`.
+All connection routes send `Cache-Control: no-store` and omit Box tokens.
 
 ## Persistent authorization and token storage
 
@@ -93,16 +114,16 @@ const store = new BoxStore({ encryptionKey: config.tokenEncryptionKey });
   authorization URL and browser cookie. SHA-256 hashes are persisted for those
   values, alongside a foreign-key reference to the initiating session. Attempts
   expire after ten minutes. Creating a new attempt also removes expired attempts.
-- `consumeOAuthAttempt(state, browserNonce)` checks both hashes, the deadline, and
-  the initiating session's continued validity. It atomically deletes the attempt
-  and returns its application user ID. This supports a callback without a Bearer
-  header. The route must supply the nonce from the initiating browser's cookie.
+- `claimOAuthAttempt(state, browserNonce)` verifies the hashes, deadline, and
+  session. It atomically exchanges the state hash for a server-only claim so only
+  one callback can proceed. Saving the connection rechecks that claim and session.
+  Logout and disconnect can cancel the claim while Box requests are in flight.
 - `saveConnection(...)` keeps one Box connection per application user and encrypts
   the access/refresh pair together with AES-256-GCM. Each write uses a random
   12-byte nonce and authenticates the connection ID, application user, Box user,
   and token version. The versioned envelope supports future format changes.
 - Reconnecting the same Box account preserves folder grants. Switching accounts
-  requires `disconnect(userId, connectionId)`, which cascades deletion of that
+  requires disconnecting through the API, which cascades deletion of that
   connection's folder grants. Concurrent saves use an expected token version,
   returning `null` if another save or disconnect wins the race.
 - `grantFolder`, `revokeFolder`, and `getFolderConnection` operate on exact folder
@@ -152,8 +173,9 @@ storage encryption key, and downscoping belong inside a private credential
 component, separate from the public listing service. Ordinary users must not
 be able to choose a token scope, substitute another connection, or mint tokens.
 
-The private credential service is scheduled with the OAuth routes. It is required before
-claiming that compromising the listing service cannot expose parent tokens.
+The credential service is a server-only module in the API process. The folder
+listing component needs a separate process and a restricted-token interface
+before it can provide process-level isolation from parent tokens.
 Even with isolation, the credential component is privileged. The feature does
 not alter the Box account holder's existing access through Box itself.
 
@@ -241,6 +263,7 @@ bindings. Box requires a new server application; an OAuth app cannot be converte
 - [OAuth setup](https://developer.box.com/guides/authentication/oauth2/oauth2-setup/)
 - [OAuth without an SDK](https://developer.box.com/guides/authentication/oauth2/without-sdk/)
 - [Single-use refresh token rotation](https://developer.box.com/guides/authentication/tokens/refresh/)
+- [Token revocation](https://developer.box.com/guides/authentication/tokens/revoke/)
 - [Downscoping](https://developer.box.com/guides/authentication/tokens/downscope/)
 - [Explorer scopes](https://developer.box.com/guides/embed/ui-elements/explorer/)
 - [Folder items](https://developer.box.com/reference/get-folders-id-items/)

@@ -52,6 +52,8 @@ folder listing so a new server-auth Box application can replace OAuth later.
 
 ## 3. User OAuth connection lifecycle
 
+- Implemented with the authenticated connection routes, browser-bound callback,
+  encrypted token rotation, and disconnect with best-effort Box revocation.
 - Add authenticated `POST /api/box/connect`, `GET /api/box/connection`, and
   `DELETE /api/box/connection`, plus the Box redirect callback.
 - Bind single-use, expiring OAuth state to the initiating application session and
@@ -69,7 +71,8 @@ folder listing so a new server-auth Box application can replace OAuth later.
   exact folder/connection authorization, strict pagination validation, and
   `Cache-Control: no-store`.
 - Obtain a folder-restricted `base_explorer` token through the credential
-  component. Keep the listing component independent of OAuth vs. server auth.
+  component. Run the listing component separately from the process holding
+  parent credentials. Keep listing independent of the Box authentication mode.
 - Request only `id,type,name,created_at,modified_at`; return only direct-child
   files via explicitly constructed response objects and marker pagination.
 - Include the containing folder's ID and display name in the response. Resolve
@@ -125,6 +128,14 @@ metadata response types, pagination, and future requirement-checking logic.
 
 ## Verification status
 
+- Step 3 implemented with 39 route tests through Hono, local SQLite, and a fake
+  Box transport. They cover session expiry, callback validation and replay,
+  cancellation during code exchange, refresh concurrency and rotation, and
+  disconnect with or without confirmed revocation.
+- The full suite passes with 308 tests. The build, scoped strict TypeScript
+  check, and a smoke test through the built API pass. The smoke test used
+  SQLite and synthetic Box responses. Repository-wide lint still fails on the
+  existing missing `bun-types` definition.
 - Step 2 implemented with 108 additional tests, covering the real SQLite schema,
   encrypted token integrity, ownership, OAuth state expiry and replay, separate
   database clients, refresh races, and lost persistence responses. The full
@@ -132,8 +143,8 @@ metadata response types, pagination, and future requirement-checking logic.
   all Box code, tests, and scripts pass.
 - Hardened the existing D1 query helper to reject failed or malformed result
   envelopes. Its previously unsafe first-result access is also resolved.
-- Remote D1 schema application and live Box permission verification remain
-  pending. Step 3 will introduce the OAuth routes and their route-specific tests.
+- Remote D1 schema application, browser authorization against Box, and live Box
+  permission verification remain pending.
 - Step 1 code implemented: optional OAuth configuration validation, safe startup
   diagnostics, documented setup, and opt-in synthetic permissions probe. No
   public routes have been added; route auth/validation/business tests begin with
