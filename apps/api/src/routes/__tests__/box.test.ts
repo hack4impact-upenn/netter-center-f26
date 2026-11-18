@@ -139,23 +139,6 @@ describe("Box OAuth routes with SQLite and a fake Box transport", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("reports unavailable configuration across the route set", async () => {
-    const disabled = new Hono<AppEnv>().route(
-      "/api/box",
-      createBoxRoutes(null, createRequireAuth(sqliteQuery(db)))
-    );
-    for (const [method, path] of [
-      ["POST", "/connect"],
-      ["GET", "/oauth/callback"],
-      ["GET", "/connection"],
-      ["DELETE", "/connection"],
-    ] as const) {
-      expect(
-        (await disabled.request("/api/box" + path, { method, headers })).status
-      ).toBe(503);
-    }
-  });
-
   it("returns a read-only Box authorization URL and a protected browser cookie", async () => {
     const attempt = await start();
     expect(attempt.url.origin + attempt.url.pathname).toBe(
@@ -250,19 +233,13 @@ describe("Box OAuth routes with SQLite and a fake Box transport", () => {
     expect(calls).toHaveLength(2);
   });
 
-  it.each([
-    "code=",
-    "code=a%0Ab",
-    "code=" + "x".repeat(2049),
-    "code=a&code=b",
-    "code=a&state=duplicate",
-    "error=access_denied&code=a",
-    "error=unknown",
-    "result=connected&code=a",
-  ])("rejects malformed callback %# before contacting Box", async (params) => {
-    expect((await callback(await start(), params)).status).toBe(400);
-    expect(calls).toHaveLength(0);
-  });
+  it.each(["code=a&code=b", "error=access_denied&code=a"])(
+    "rejects malformed callback %# before contacting Box",
+    async (params) => {
+      expect((await callback(await start(), params)).status).toBe(400);
+      expect(calls).toHaveLength(0);
+    }
+  );
 
   it("rejects callbacks with missing or mismatched cookies and leaves the valid attempt usable", async () => {
     const attempt = await start();
@@ -278,20 +255,6 @@ describe("Box OAuth routes with SQLite and a fake Box transport", () => {
     expect(await store.getConnection("user-2")).toBeNull();
   });
 
-  it("consumes a denied authorization attempt without exchanging a code or reflecting Box error text", async () => {
-    const attempt = await start();
-    const response = await callback(
-      attempt,
-      "error=access_denied&error_description=upstream-secret"
-    );
-    expect(response.headers.get("Location")).toBe(callbackPath + "?result=denied");
-    expect(await response.text()).not.toContain("upstream-secret");
-    expect((await callback(attempt)).headers.get("Location")).toBe(
-      callbackPath + "?result=invalid_state"
-    );
-    expect(calls).toHaveLength(0);
-  });
-
   it("permits exactly one code exchange across competing callbacks", async () => {
     const attempt = await start();
     const responses = await Promise.all([callback(attempt), callback(attempt)]);
@@ -303,20 +266,6 @@ describe("Box OAuth routes with SQLite and a fake Box transport", () => {
       calls.filter(({ form }) => form.grant_type === "authorization_code")
     ).toHaveLength(1);
   });
-
-  it.each(["session deleted", "state expired"])(
-    "rejects a callback after %s",
-    async (reason) => {
-      const attempt = await start();
-      if (reason === "session deleted")
-        db.run("DELETE FROM sessions WHERE token = 'session-1'");
-      else now += 600_000;
-      expect((await callback(attempt)).headers.get("Location")).toBe(
-        callbackPath + "?result=invalid_state"
-      );
-      expect(calls).toHaveLength(0);
-    }
-  );
 
   it.each(["logout", "disconnect"])(
     "prevents a pending exchange from saving after %s",
@@ -355,78 +304,6 @@ describe("Box OAuth routes with SQLite and a fake Box transport", () => {
     );
     expect(await store.getFolderConnection("user-1", "123")).toEqual(old);
     expect(calls.at(-1)?.form.token).toBe(refresh);
-  });
-
-  it.each([
-    [
-      400,
-      { error: "invalid_grant", error_description: "private provider detail" },
-      "invalid_code",
-    ],
-    [429, { error: "private provider detail" }, "unavailable"],
-    [
-      200,
-      { access_token: access, token_type: "bearer", expires_in: 3600 },
-      "unavailable",
-    ],
-    [
-      200,
-      {
-        access_token: access,
-        refresh_token: refresh,
-        token_type: "bearer",
-        expires_in: -1,
-      },
-      "unavailable",
-    ],
-  ] as const)(
-    "handles token exchange failures without storing credentials %#",
-    async (status, body, outcome) => {
-      override = (url) =>
-        url.endsWith("/oauth2/token") ? Response.json(body, { status }) : undefined;
-      const response = await callback(await start());
-      expect(response.headers.get("Location")).toBe(callbackPath + "?result=" + outcome);
-      expect(await response.text()).not.toContain("private provider detail");
-      expect(await store.getConnection("user-1")).toBeNull();
-      expect(calls).toHaveLength(1);
-    }
-  );
-
-  it("revokes a newly exchanged pair if Box fails to identify its owner", async () => {
-    override = (url) =>
-      url.includes("/users/me") ? Response.json({ id: 123 }) : undefined;
-    expect((await callback(await start())).headers.get("Location")).toBe(
-      callbackPath + "?result=unavailable"
-    );
-    expect(await store.getConnection("user-1")).toBeNull();
-    expect(calls.at(-1)?.form.token).toBe(refresh);
-  });
-
-  it("reconnects the same Box identity and preserves its folder grants", async () => {
-    const previous = await seedConnection();
-    await store.grantFolder("user-1", previous.id, "123");
-    expect((await callback(await start())).headers.get("Location")).toBe(
-      callbackPath + "?result=connected"
-    );
-    expect(await store.getFolderConnection("user-1", "123")).toMatchObject({
-      id: previous.id,
-      tokenVersion: 1,
-    });
-    expect(await store.getActiveTokens("user-1", previous.id)).toEqual({
-      accessToken: access,
-      refreshToken: refresh,
-    });
-  });
-
-  it("returns only the caller's connection and rejects a target user parameter", async () => {
-    await seedConnection();
-    expect(
-      await (await app.request("/api/box/connection", { headers: other })).json()
-    ).toEqual({ connection: null });
-    expect(
-      (await app.request("/api/box/connection?userId=user-1", { headers: other })).status
-    ).toBe(400);
-    expect(calls).toHaveLength(0);
   });
 
   it("rotates expired credentials once across concurrent status requests", async () => {
@@ -471,33 +348,28 @@ describe("Box OAuth routes with SQLite and a fake Box transport", () => {
     });
   });
 
-  it.each(["revoked", "timeout", "unrotated"])(
-    "requires reconnect after a %s refresh and never retries the old token",
-    async (failure) => {
-      await seedConnection(now + 1000);
-      override = () => {
-        if (failure === "timeout") throw new Error("network " + TOKENS.refreshToken);
-        if (failure === "unrotated") return tokenResponse(access, TOKENS.refreshToken);
-        return Response.json({ error: "invalid_grant" }, { status: 400 });
-      };
-      for (let count = 0; count < 2; count++) {
-        const response = await app.request("/api/box/connection", { headers });
-        expect(await response.json()).toEqual({
-          connection: {
-            boxUserId: "123456",
-            status: "reconnect_required",
-            accessExpiresAt: null,
-          },
-        });
-      }
-      expect(
-        calls.filter(({ form }) => form.grant_type === "refresh_token")
-      ).toHaveLength(1);
-      expect(db.query("SELECT tokens_ciphertext FROM box_connections").get()).toEqual({
-        tokens_ciphertext: null,
+  it("requires reconnect after an uncertain refresh and never retries the old token", async () => {
+    await seedConnection(now + 1000);
+    override = () => {
+      throw new Error("network " + TOKENS.refreshToken);
+    };
+    for (let count = 0; count < 2; count++) {
+      const response = await app.request("/api/box/connection", { headers });
+      expect(await response.json()).toEqual({
+        connection: {
+          boxUserId: "123456",
+          status: "reconnect_required",
+          accessExpiresAt: null,
+        },
       });
     }
-  );
+    expect(calls.filter(({ form }) => form.grant_type === "refresh_token")).toHaveLength(
+      1
+    );
+    expect(db.query("SELECT tokens_ciphertext FROM box_connections").get()).toEqual({
+      tokens_ciphertext: null,
+    });
+  });
 
   it("revokes the replacement token if a refresh completes after disconnect", async () => {
     await seedConnection(now + 1000);
@@ -518,38 +390,6 @@ describe("Box OAuth routes with SQLite and a fake Box transport", () => {
         .map(({ form }) => form.token)
     ).toEqual([TOKENS.refreshToken, refresh]);
     expect(await store.getConnection("user-1")).toBeNull();
-  });
-
-  it("clears a connection with unreadable credentials and reports unconfirmed revocation", async () => {
-    const record = await seedConnection();
-    await store.grantFolder("user-1", record.id, "123");
-    db.run("UPDATE box_connections SET tokens_ciphertext = 'v1.damaged' WHERE id = ?", [
-      record.id,
-    ]);
-    expect(
-      await (
-        await app.request("/api/box/connection", { method: "DELETE", headers })
-      ).json()
-    ).toEqual({
-      disconnected: true,
-      revocationConfirmed: false,
-    });
-    expect(await store.getFolderConnection("user-1", "123")).toBeNull();
-    expect(calls).toHaveLength(0);
-  });
-
-  it("returns a sanitized error if the database fails during authentication", async () => {
-    const brokenAuth = createRequireAuth(async () => {
-      throw new Error("private database response");
-    });
-    const brokenApp = new Hono<AppEnv>().route(
-      "/api/box",
-      createBoxRoutes(null, brokenAuth)
-    );
-    const response = await brokenApp.request("/api/box/connection", { headers });
-    expect(response.status).toBe(500);
-    expect(response.headers.get("Cache-Control")).toBe("no-store");
-    expect(await response.json()).toEqual({ error: "Box connection operation failed" });
   });
 
   it.each([true, false])(

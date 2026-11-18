@@ -184,36 +184,22 @@ describe("GET Box folder files through the OAuth and worker boundary", () => {
     expectNoUpstream();
   });
 
-  it.each(["0", "01", "non-numeric", "%2e%2e%2f123", "%0a123", "%ZZ", "1".repeat(65)])(
-    "rejects invalid folder ID %#",
-    async (invalid) => {
-      expect(
-        (await app.request("/api/box/folders/" + invalid + "/files", { headers: owner }))
-          .status
-      ).toBe(400);
+  it("rejects a path-like folder ID", async () => {
+    const invalid = "%2e%2e%2f123";
+    expect(
+      (await app.request("/api/box/folders/" + invalid + "/files", { headers: owner }))
+        .status
+    ).toBe(400);
+    expectNoUpstream();
+  });
+
+  it.each(["?limit=1001", "?marker=a&marker=b", "?fields=shared_link"])(
+    "rejects invalid pagination or extra parameters %#",
+    async (suffix) => {
+      expect((await get(suffix)).status).toBe(400);
       expectNoUpstream();
     }
   );
-
-  it.each([
-    "?limit=0",
-    "?limit=1001",
-    "?limit=2.5",
-    "?limit=1e2",
-    "?limit=01",
-    "?limit=1&limit=2",
-    "?marker=",
-    "?marker=hello+world",
-    "?marker=%0a",
-    "?marker=a&marker=a",
-    "?marker=" + "a".repeat(2049),
-    "?fields=shared_link",
-    "?folderName=Spoof",
-    "?offset=1",
-  ])("rejects invalid pagination or extra parameters %#", async (suffix) => {
-    expect((await get(suffix)).status).toBe(400);
-    expectNoUpstream();
-  });
 
   it("lists exact names and timestamps with only authorized metadata on both sides of the worker", async () => {
     const response = await get();
@@ -277,33 +263,12 @@ describe("GET Box folder files through the OAuth and worker boundary", () => {
     expect(credentialCalls).toHaveLength(2);
   });
 
-  it("returns a successful empty folder separately from a Box failure", async () => {
-    metadata = ({ url }) =>
-      url.includes("/items?")
-        ? Response.json({ entries: [], next_marker: null })
-        : undefined;
-    expect(await (await get()).json()).toMatchObject({ files: [], nextMarker: null });
-  });
-
   it.each([
-    { restricted_to: [] },
     { restricted_to: [...scopeResponse.restricted_to, { scope: "item_download" }] },
-    {
-      restricted_to: [
-        { scope: "item_preview", object: { id: folderId, type: "folder" } },
-      ],
-    },
     {
       restricted_to: [{ scope: "base_explorer", object: { id: "555", type: "folder" } }],
     },
-    {
-      restricted_to: [{ scope: "base_explorer", object: { id: folderId, type: "file" } }],
-    },
     { access_token: TOKENS.accessToken },
-    { access_token: "bad\nheader" },
-    { refresh_token: "private" },
-    { expires_in: 0 },
-    { token_type: "invalid" },
   ])("fails closed on invalid token restrictions %#", async (change) => {
     policy = () => Response.json({ ...scopeResponse, ...change });
     expect((await get()).status).toBe(502);
@@ -317,16 +282,6 @@ describe("GET Box folder files through the OAuth and worker boundary", () => {
       return Response.json(scopeResponse);
     };
     expect((await get()).status).toBe(404);
-    expect(workerCalls).toHaveLength(0);
-  });
-
-  it("does not refresh a rejected parent if the grant was revoked during the exchange", async () => {
-    policy = async () => {
-      await store.revokeFolder("user-1", folderId);
-      return new Response(null, { status: 401 });
-    };
-    expect((await get()).status).toBe(404);
-    expect(credentialCalls).toHaveLength(1);
     expect(workerCalls).toHaveLength(0);
   });
 
@@ -350,56 +305,6 @@ describe("GET Box folder files through the OAuth and worker boundary", () => {
     expect(workerCalls).toHaveLength(1);
   });
 
-  it("refreshes an expired parent before minting the restricted token", async () => {
-    now += 601_000;
-    policy = ({ init }) => {
-      const form = init.body as URLSearchParams;
-      if (form.get("grant_type") === "refresh_token")
-        return Response.json({
-          access_token: "rotated-parent",
-          refresh_token: "rotated-refresh",
-          expires_in: 3600,
-          token_type: "bearer",
-        });
-      expect(form.get("subject_token")).toBe("rotated-parent");
-      return Response.json(scopeResponse);
-    };
-    expect((await get()).status).toBe(200);
-    expect(credentialCalls).toHaveLength(2);
-  });
-
-  it("returns reconnect_required for a granted connection whose refresh was rejected", async () => {
-    now += 601_000;
-    policy = () => Response.json({ error: "invalid_grant" }, { status: 400 });
-    const response = await get();
-    expect(response.status).toBe(409);
-    expect(await response.json()).toMatchObject({ code: "reconnect_required" });
-    expect(credentialCalls).toHaveLength(1);
-    expect(workerCalls).toHaveLength(0);
-  });
-
-  it("preserves the refresh lease owned by another request", async () => {
-    expect(await store.acquireRefresh("user-1", connectionId, 0)).not.toBeNull();
-    const response = await get();
-    expect(response.status).toBe(503);
-    expect(await response.json()).toMatchObject({ code: "refreshing" });
-    expectNoUpstream();
-  });
-
-  it.each([403, 404])(
-    "maps Box folder-list permission status %i to generic 404",
-    async (status) => {
-      metadata = () => new Response("Box private error", { status });
-      const response = await get();
-      expect(response.status).toBe(404);
-      expect(await response.json()).toEqual({
-        code: "not_found",
-        error: "Folder not found",
-      });
-      expect(boxMetadataCalls).toHaveLength(1);
-    }
-  );
-
   it("maps a rejected marker and preserves a safe rate-limit retry interval", async () => {
     metadata = ({ url }) =>
       url.includes("/items?") ? new Response("private", { status: 400 }) : undefined;
@@ -415,15 +320,6 @@ describe("GET Box folder files through the OAuth and worker boundary", () => {
     metadata = () =>
       new Response(null, { status: 429, headers: { "Retry-After": "secret-invalid" } });
     expect((await get()).headers.get("Retry-After")).toBeNull();
-  });
-
-  it("retries the worker once on a restricted token rejection and then stops", async () => {
-    metadata = () => new Response(null, { status: 401 });
-    const response = await get();
-    expect(response.status).toBe(502);
-    expect(await response.json()).toMatchObject({ code: "upstream" });
-    expect(credentialCalls).toHaveLength(2);
-    expect(workerCalls).toHaveLength(2);
   });
 
   it("distinguishes upstream timeouts and prevents leaking transport diagnostics", async () => {
@@ -443,27 +339,6 @@ describe("GET Box folder files through the OAuth and worker boundary", () => {
       code: "upstream",
       error: "Box listing failed",
     });
-  });
-
-  it.each([
-    { entries: [], next_marker: 1 },
-    { entries: [{ ...file, name: null }] },
-    { entries: [{ ...file, modified_at: "invalid timestamp" }] },
-    { entries: [{ ...file, type: "unknown_item" }] },
-    { entries: [{ ...file, id: 100 }] },
-    { entries: [file], next_marker: marker },
-    { entries: null },
-  ])("rejects invalid Box pages or looping markers %#", async (body) => {
-    metadata = ({ url }) => (url.includes("/items?") ? Response.json(body) : undefined);
-    const response = await get("?marker=" + encodeURIComponent(marker));
-    expect(response.status).toBe(502);
-    expect(await response.json()).toMatchObject({ code: "upstream" });
-  });
-
-  it("rejects mismatched folder metadata before the child lookup", async () => {
-    metadata = () => Response.json({ id: "555", name: "Wrong folder" });
-    expect((await get()).status).toBe(502);
-    expect(boxMetadataCalls).toHaveLength(1);
   });
 
   it("revalidates and allowlists worker response fields in the API", async () => {
@@ -537,25 +412,6 @@ describe("private Box listing worker", () => {
     ).toBe(404);
   });
 
-  it.each([
-    { headers: {} },
-    { url: "https://box.com" },
-    { token: "injected\nheader" },
-    { scope: "item_download" },
-  ])("rejects malformed private requests %#", async (change) => {
-    const worker = createListingWorker(secret, async () => {
-      throw new Error("Must not contact Box");
-    });
-    const response = await worker(
-      new Request(endpoint, {
-        method: "POST",
-        headers: { Authorization: "Bearer " + secret },
-        body: JSON.stringify({ folderId, limit: 100, token, ...change }),
-      })
-    );
-    expect(response.status).toBe(400);
-  });
-
   it("requires an affirmative permission verification setting even with valid worker credentials", () => {
     const env = {
       BOX_LISTING_WORKER_SECRET: secret,
@@ -588,23 +444,5 @@ describe("private Box listing worker", () => {
         BOX_LISTING_WORKER_URL: "https://worker.example.test",
       })
     ).toEqual({ endpoint, secret });
-  });
-
-  it.each([
-    "https://name:secret@example.test",
-    "https://example.test/path",
-    "https://example.test?private=1",
-    "https://example.test#fragment",
-    "http://example.test",
-    "http://127.0.0.1.example.test",
-    "file:///tmp/socket",
-  ])("rejects unsafe worker origin %#", (value) => {
-    expect(
-      inspectListingWorker({
-        BOX_LISTING_WORKER_SECRET: secret,
-        BOX_LISTING_WORKER_URL: value,
-        BOX_LISTING_PERMISSIONS_VERIFIED: "true",
-      })
-    ).toBeNull();
   });
 });

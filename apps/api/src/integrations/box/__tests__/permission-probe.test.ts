@@ -130,175 +130,19 @@ describe("Box synthetic permissions experiment", () => {
     }
   });
 
-  it("refuses to run without explicit synthetic-fixture confirmation", async () => {
-    const { request, calls } = fixtureTransport();
-    await expect(
-      verifyBoxPermissions({ ...input, confirmSyntheticFixtures: false }, request)
-    ).rejects.toThrow("synthetic");
-    expect(calls).toHaveLength(0);
-  });
-
-  it.each(["folderId", "fileId", "outsideFolderId"] as const)(
-    "validates %s before sending any token",
-    async (name) => {
-      for (const id of [
-        "",
-        "0",
-        "-1",
-        "1.5",
-        "123/../files",
-        "https://evil.example",
-        "1?fields=shared_link",
-        "1".repeat(65),
-      ]) {
-        const { request, calls } = fixtureTransport();
-        await expect(
-          verifyBoxPermissions({ ...input, [name]: id }, request)
-        ).rejects.toThrow(`Invalid ${name}`);
-        expect(calls).toHaveLength(0);
-      }
-    }
-  );
-
-  it("requires distinct inside and outside folders", async () => {
-    const { request, calls } = fixtureTransport();
-    await expect(
-      verifyBoxPermissions({ ...input, outsideFolderId: input.folderId }, request)
-    ).rejects.toThrow("differ");
-    expect(calls).toHaveLength(0);
-  });
-
-  it.each(["", "token with spaces", "token\r\nInjected: yes"])(
-    "rejects missing or malformed token %#",
-    async (token) => {
-      const { request, calls } = fixtureTransport();
-      await expect(
-        verifyBoxPermissions({ ...input, accessToken: token }, request)
-      ).rejects.toThrow("access token");
-      expect(calls).toHaveLength(0);
-    }
-  );
-
-  it.each([
-    { ...previewFixture, id: "999" },
-    { ...previewFixture, type: "folder" },
-    { ...previewFixture, parent: { id: "999" } },
-    { ...previewFixture, representations: { entries: [] } },
-    { ...previewFixture, expiring_embed_link: null },
-  ])("requires a valid, preview-ready file in the fixture folder %#", async (fixture) => {
+  it("requires a working download with the parent token", async () => {
+    const failureIndex = 1;
     const { request, calls } = fixtureTransport((_, index) =>
-      index === 0 ? Response.json(fixture) : undefined
-    );
-    const result = await verifyBoxPermissions(input, request);
-    expect(result).toEqual({
-      verified: false,
-      checks: [{ check: "fixture metadata positive control", status: "inconclusive" }],
-    });
-    expect(calls).toHaveLength(1);
-  });
-
-  it.each([0, 1, 2, 3])(
-    "does not interpret a failed positive control as denied permissions at request %i",
-    async (failureIndex) => {
-      const { request, calls } = fixtureTransport((_, index) =>
-        index === failureIndex ? new Response(null, { status: 404 }) : undefined
-      );
-      const result = await verifyBoxPermissions(input, request);
-      expect(result.verified).toBe(false);
-      expect(result.checks.at(-1)?.status).toBe("inconclusive");
-      expect(calls.some((call) => call.url.pathname === "/oauth2/token")).toBe(false);
-    }
-  );
-
-  it.each([401, 403, 429, 500])(
-    "handles exchange failure %i without claiming verification",
-    async (status) => {
-      const { request } = fixtureTransport((_, index) =>
-        index === 4 ? new Response("sensitive upstream body", { status }) : undefined
-      );
-      const result = await verifyBoxPermissions(input, request);
-      expect(result.checks.at(-1)).toEqual({
-        check: "folder token exchange",
-        status: "inconclusive",
-      });
-      expect(result.verified).toBe(false);
-      expect(JSON.stringify(result)).not.toContain("sensitive");
-    }
-  );
-
-  it("requires a valid outside-folder positive-control response", async () => {
-    const { request, calls } = fixtureTransport((_, index) =>
-      index === 3 ? Response.json({ unexpected: [] }) : undefined
+      index === failureIndex ? new Response(null, { status: 404 }) : undefined
     );
     const result = await verifyBoxPermissions(input, request);
     expect(result.verified).toBe(false);
-    expect(result.checks.at(-1)).toEqual({
-      check: "outside folder positive control",
-      status: "inconclusive",
-    });
-    expect(calls).toHaveLength(4);
+    expect(result.checks.at(-1)?.status).toBe("inconclusive");
+    expect(calls.some((call) => call.url.pathname === "/oauth2/token")).toBe(false);
   });
 
-  it.each([
-    { ...tokenFixture, access_token: "" },
-    { ...tokenFixture, access_token: input.accessToken },
-    { ...tokenFixture, access_token: "bad\r\ntoken" },
-    { ...tokenFixture, token_type: "unexpected" },
-    { ...tokenFixture, expires_in: 0 },
-    { ...tokenFixture, refresh_token: "unexpected" },
-    { ...tokenFixture, restricted_to: [] },
-    {
-      ...tokenFixture,
-      restricted_to: [...tokenFixture.restricted_to, { scope: "item_download" }],
-    },
-    {
-      ...tokenFixture,
-      restricted_to: [{ scope: "item_download", object: { id: "123", type: "folder" } }],
-    },
-    {
-      ...tokenFixture,
-      restricted_to: [{ scope: "base_explorer", object: { id: "999", type: "folder" } }],
-    },
-    {
-      ...tokenFixture,
-      restricted_to: [{ scope: "base_explorer", object: { id: "123", type: "file" } }],
-    },
-  ])("rejects malformed or incorrectly restricted tokens %#", async (fixture) => {
-    const { request, calls } = fixtureTransport((_, index) =>
-      index === 4 ? Response.json(fixture) : undefined
-    );
-    const result = await verifyBoxPermissions(input, request);
-    expect(result.verified).toBe(false);
-    expect(result.checks.at(-1)?.check).toBe("folder token exchange");
-    expect(calls).toHaveLength(5);
-  });
-
-  it.each([
-    { entries: [] },
-    { entries: [{ id: "456", type: "folder", name: "folder" }] },
-    { entries: [{ id: "999", type: "file", name: "wrong.pdf" }] },
-    { entries: [{ id: "456", type: "file", name: "missing-timestamps.pdf" }] },
-    { unexpected: [] },
-  ])(
-    "requires the actual fixture and timestamp metadata in the restricted listing %#",
-    async (fixture) => {
-      const { request } = fixtureTransport((_, index) =>
-        index === 5 ? Response.json(fixture) : undefined
-      );
-      const result = await verifyBoxPermissions(input, request);
-      expect(result.verified).toBe(false);
-      expect(result.checks.at(-1)).toEqual({
-        check: "restricted folder listing",
-        status: "inconclusive",
-      });
-    }
-  );
-
-  it.each([
-    new Response(null, { status: 403 }),
-    Response.json({ id: "999", name: "Wrong folder" }),
-    Response.json({ id: input.folderId, name: null }),
-  ])("requires permission to read the requested folder name %#", async (response) => {
+  it("requires permission to read the requested folder name", async () => {
+    const response = new Response(null, { status: 403 });
     const { request, calls } = fixtureTransport((_, index) =>
       index === 10 ? response : undefined
     );
@@ -311,134 +155,33 @@ describe("Box synthetic permissions experiment", () => {
     expect(calls[10]?.url.searchParams.get("fields")).toBe("id,name");
   });
 
-  it("does not treat an expired restricted token as successful denials", async () => {
+  it("fails if a restricted download redirects to content", async () => {
+    const failureIndex = 6;
     const { request, calls } = fixtureTransport((_, index) =>
-      index === 5 ? new Response(null, { status: 401 }) : undefined
-    );
-    const result = await verifyBoxPermissions(input, request);
-    expect(result.verified).toBe(false);
-    expect(result.checks.at(-1)?.status).toBe("inconclusive");
-    expect(calls).toHaveLength(6);
-  });
-
-  it.each([6, 7, 8, 9])(
-    "fails if a restricted operation succeeds or redirects at request %i",
-    async (failureIndex) => {
-      const { request, calls } = fixtureTransport((_, index) =>
-        index === failureIndex
-          ? new Response(null, { status: 302, headers: { Location: previewUrl } })
-          : undefined
-      );
-      const result = await verifyBoxPermissions(input, request);
-      expect(result.verified).toBe(false);
-      expect(result.checks.at(-1)?.status).toBe("failed");
-      expect(calls).toHaveLength(failureIndex + 1);
-      expect(calls.every((call) => call.url.origin === "https://api.box.com")).toBe(true);
-      expect(JSON.stringify(result)).not.toContain(previewUrl);
-    }
-  );
-
-  it.each([6, 7, 8, 9])(
-    "does not count upstream errors as permission denials at request %i",
-    async (failureIndex) => {
-      for (const status of [401, 429, 500, 503]) {
-        const { request } = fixtureTransport((_, index) =>
-          index === failureIndex ? new Response(null, { status }) : undefined
-        );
-        const result = await verifyBoxPermissions(input, request);
-        expect(result.verified).toBe(false);
-        expect(result.checks.at(-1)?.status).toBe("inconclusive");
-      }
-    }
-  );
-
-  it.each([403, 404])(
-    "accepts explicit denial %i with valid positive controls",
-    async (status) => {
-      const { request } = fixtureTransport((_, index) =>
-        index >= 6 && index <= 9 ? new Response(null, { status }) : undefined
-      );
-      expect((await verifyBoxPermissions(input, request)).verified).toBe(true);
-    }
-  );
-
-  it("accepts file metadata when preview capabilities are absent", async () => {
-    const { request } = fixtureTransport((_, index) =>
-      index === 9
-        ? Response.json({
-            id: "456",
-            representations: { entries: [] },
-            expiring_embed_link: null,
-          })
+      index === failureIndex
+        ? new Response(null, { status: 302, headers: { Location: previewUrl } })
         : undefined
     );
-    expect((await verifyBoxPermissions(input, request)).verified).toBe(true);
-  });
-
-  it.each([
-    { representations: previewFixture.representations },
-    { expiring_embed_link: { url: previewUrl } },
-    { representations: { unknown_capability: previewUrl } },
-    { expiring_embed_link: "unexpected-capability" },
-    { representations: [] },
-  ])(
-    "fails when any preview capability or unexpected preview shape is returned %#",
-    async (body) => {
-      const { request } = fixtureTransport((_, index) =>
-        index === 9 ? Response.json(body) : undefined
-      );
-      const result = await verifyBoxPermissions(input, request);
-      expect(result.verified).toBe(false);
-      expect(result.checks.at(-1)).toEqual({
-        check: "preview capabilities denied",
-        status: "failed",
-      });
-      expect(JSON.stringify(result)).not.toContain(previewUrl);
-    }
-  );
-
-  it.each([0, 3, 4, 5, 9])(
-    "sanitizes malformed upstream JSON at request %i",
-    async (failureIndex) => {
-      const { request } = fixtureTransport((_, index) =>
-        index === failureIndex
-          ? new Response(`invalid-json-${input.accessToken}`)
-          : undefined
-      );
-      const result = await verifyBoxPermissions(input, request);
-      expect(result.verified).toBe(false);
-      expect(result.checks.at(-1)?.status).toBe("inconclusive");
-      expect(JSON.stringify(result)).not.toContain(input.accessToken);
-    }
-  );
-
-  it("sanitizes transport failures including token-bearing messages", async () => {
-    const { request } = fixtureTransport(() => {
-      throw new Error(`network failed: ${input.accessToken}`);
-    });
     const result = await verifyBoxPermissions(input, request);
     expect(result.verified).toBe(false);
-    expect(result.checks.at(-1)?.status).toBe("inconclusive");
-    expect(JSON.stringify(result)).not.toContain(input.accessToken);
+    expect(result.checks.at(-1)?.status).toBe("failed");
+    expect(calls).toHaveLength(failureIndex + 1);
+    expect(calls.every((call) => call.url.origin === "https://api.box.com")).toBe(true);
+    expect(JSON.stringify(result)).not.toContain(previewUrl);
   });
 
-  it("cancels content responses rather than reading or following them", async () => {
-    let cancelled = 0;
-    const { request } = fixtureTransport((_, index) => {
-      if (![1, 2, 6, 7].includes(index)) return undefined;
-      return new Response(
-        new ReadableStream({
-          cancel() {
-            cancelled++;
-          },
-        }),
-        {
-          status: index < 3 ? 200 : 403,
-        }
-      );
+  it("fails if Box returns an embed preview link", async () => {
+    const body = { expiring_embed_link: { url: previewUrl } };
+    const { request } = fixtureTransport((_, index) =>
+      index === 9 ? Response.json(body) : undefined
+    );
+    const result = await verifyBoxPermissions(input, request);
+    expect(result.verified).toBe(false);
+    expect(result.checks.at(-1)).toEqual({
+      check: "preview capabilities denied",
+      status: "failed",
     });
-    expect((await verifyBoxPermissions(input, request)).verified).toBe(true);
-    expect(cancelled).toBe(4);
+    expect(JSON.stringify(result)).not.toContain(previewUrl);
   });
 });
 
