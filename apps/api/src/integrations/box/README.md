@@ -12,6 +12,30 @@ token persistence, OAuth routes, paginated folder metadata listing, and a local
 browser test page.
 See [the implementation steps](../../../docs/box-integration-plan.md).
 
+## Browse your Box account locally without D1
+
+From `apps/api`, run `bun run dev:box` and open
+[http://localhost:3001](http://localhost:3001). Select **Sign in with Box**.
+The viewer opens the root of the signed-in account. Click a folder to browse
+inside it and **Next page** to see additional names.
+
+Set `BOX_CLIENT_ID`, `BOX_CLIENT_SECRET`, and `BOX_REDIRECT_URI` in
+`apps/api/.env` if needed. Register the exact callback in the Box Developer
+Console. The default local callback is
+`http://localhost:3001/api/box/oauth/callback`. Stop the regular API first if
+it is already using the callback port. The viewer refuses to run in production.
+
+The standalone server binds to loopback and keeps its single browser session
+and Box tokens in memory. Sign-out clears the session and attempts Box
+revocation. When the process stops or the access token expires, sign in again.
+D1, an app login, the listing worker, and an encryption key are unnecessary
+for this viewer.
+
+This personal viewer makes fixed folder metadata requests with the signed-in
+user's read-only OAuth token. It renders folder names and filenames as text.
+The regular API's folder-grant and live permission checks still apply to its
+separate listing endpoint.
+
 This work is limited to backend Box integration. The production frontend is
 owned by another team; `apps/web` is outside this work's scope. Step 5 will add
 an intentionally basic, development-only test page under `apps/api` that lists

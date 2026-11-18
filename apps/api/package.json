@@ -8,6 +8,7 @@
     "build": "bun build src/index.ts src/box-listing-worker.ts --outdir dist --target bun",
     "start": "bun dist/index.js",
     "test": "bun test",
+    "dev:box": "bun src/box-local.ts",
     "start:box-listing-worker": "bun --no-env-file src/box-listing-worker.ts",
     "setup": "bun scripts/setup.ts",
     "verify:box-permissions": "bun scripts/verify-box-permissions.ts",
