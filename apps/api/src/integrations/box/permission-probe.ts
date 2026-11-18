@@ -1,3 +1,5 @@
+import { isBoxBearer, readRestrictedFolderToken } from "./listing-contract";
+
 const BOX_API = "https://api.box.com";
 const NUMERIC_ID = /^[1-9]\d{0,63}$/;
 
@@ -66,7 +68,7 @@ export async function verifyBoxPermissions(
   if (input.folderId === input.outsideFolderId) {
     throw new Error("Outside folder must differ from the fixture folder");
   }
-  if (!input.accessToken || /\s/.test(input.accessToken)) {
+  if (!isBoxBearer(input.accessToken)) {
     throw new Error("Permission probe requires a user-authorized access token");
   }
 
@@ -153,29 +155,12 @@ export async function verifyBoxPermissions(
       return stop(currentCheck, "inconclusive");
     }
     const tokenBody: unknown = await exchange.json();
-    if (
-      !isObject(tokenBody) ||
-      typeof tokenBody.access_token !== "string" ||
-      !tokenBody.access_token ||
-      /\s/.test(tokenBody.access_token) ||
-      tokenBody.access_token === input.accessToken ||
-      tokenBody.token_type !== "bearer" ||
-      !Array.isArray(tokenBody.restricted_to) ||
-      tokenBody.restricted_to.length !== 1
-    ) {
-      return stop(currentCheck, "inconclusive");
-    }
-    const restriction: unknown = tokenBody.restricted_to[0];
-    if (
-      !isObject(restriction) ||
-      restriction.scope !== "base_explorer" ||
-      !isObject(restriction.object) ||
-      restriction.object.type !== "folder" ||
-      restriction.object.id !== input.folderId
-    ) {
+    let token: string;
+    try {
+      token = readRestrictedFolderToken(tokenBody, input.accessToken, input.folderId);
+    } catch {
       return stop(currentCheck, "failed");
     }
-    const token = tokenBody.access_token;
     checks.push({ check: currentCheck, status: "passed" });
 
     currentCheck = "restricted folder listing";
@@ -254,6 +239,22 @@ export async function verifyBoxPermissions(
         currentCheck,
         status >= 200 && status < 400 ? "failed" : "inconclusive"
       );
+    }
+    checks.push({ check: currentCheck, status: "passed" });
+    currentCheck = "restricted folder name lookup";
+    const folder = await call(`/2.0/folders/${input.folderId}?fields=id,name`, token);
+    if (folder.status !== 200) {
+      await discard(folder);
+      return stop(currentCheck, "inconclusive");
+    }
+    const body: unknown = await folder.json();
+    if (
+      !isObject(body) ||
+      body.id !== input.folderId ||
+      typeof body.name !== "string" ||
+      !body.name
+    ) {
+      return stop(currentCheck, "inconclusive");
     }
     checks.push({ check: currentCheck, status: "passed" });
     return { verified: true, checks };

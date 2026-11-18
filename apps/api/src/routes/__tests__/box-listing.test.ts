@@ -556,8 +556,24 @@ describe("private Box listing worker", () => {
     expect(response.status).toBe(400);
   });
 
+  it("requires an affirmative permission verification setting even with valid worker credentials", () => {
+    const env = {
+      BOX_LISTING_WORKER_SECRET: secret,
+      BOX_LISTING_WORKER_URL: "https://worker.example.test",
+    };
+    for (const flag of [undefined, "false", "TRUE"]) {
+      expect(
+        inspectListingWorker({ ...env, BOX_LISTING_PERMISSIONS_VERIFIED: flag })
+      ).toBeNull();
+    }
+    expect(
+      inspectListingWorker({ ...env, BOX_LISTING_PERMISSIONS_VERIFIED: "true" })
+    ).toEqual({ endpoint, secret });
+  });
+
   it("enforces HTTPS in production and accepts loopback HTTP for local setup", () => {
     const env = {
+      BOX_LISTING_PERMISSIONS_VERIFIED: "true",
       BOX_LISTING_WORKER_SECRET: secret,
       BOX_LISTING_WORKER_URL: "http://127.0.0.1:3002",
     };
@@ -587,6 +603,7 @@ describe("private Box listing worker", () => {
       inspectListingWorker({
         BOX_LISTING_WORKER_SECRET: secret,
         BOX_LISTING_WORKER_URL: value,
+        BOX_LISTING_PERMISSIONS_VERIFIED: "true",
       })
     ).toBeNull();
   });

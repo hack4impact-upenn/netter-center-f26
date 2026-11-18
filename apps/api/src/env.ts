@@ -67,7 +67,7 @@ export function validateEnv(): void {
     !inspectListingWorker()
   ) {
     warnings.push(
-      "  - Box listing unavailable: check BOX_LISTING_WORKER_URL and BOX_LISTING_WORKER_SECRET"
+      "  - Box listing unavailable: check BOX_LISTING_WORKER_URL, BOX_LISTING_WORKER_SECRET, and BOX_LISTING_PERMISSIONS_VERIFIED"
     );
   }
 

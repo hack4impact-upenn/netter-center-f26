@@ -16,7 +16,13 @@ export function inspectListingWorker(
 ) {
   const raw = env.BOX_LISTING_WORKER_URL;
   const secret = env.BOX_LISTING_WORKER_SECRET;
-  if (!raw || !validListingWorkerSecret(secret)) return null;
+  if (
+    env.BOX_LISTING_PERMISSIONS_VERIFIED !== "true" ||
+    !raw ||
+    !validListingWorkerSecret(secret)
+  ) {
+    return null;
+  }
   try {
     const url = new URL(raw);
     const local = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);

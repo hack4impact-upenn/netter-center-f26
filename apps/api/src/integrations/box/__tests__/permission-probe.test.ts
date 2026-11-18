@@ -27,6 +27,7 @@ const previewFixture = {
 const tokenFixture = {
   access_token: restrictedToken,
   token_type: "bearer",
+  expires_in: 900,
   restricted_to: [
     { scope: "base_explorer", object: { id: input.folderId, type: "folder" } },
   ],
@@ -80,6 +81,9 @@ function fixtureTransport(override?: Override) {
     if (call.url.pathname === `/2.0/folders/${input.folderId}/items`) {
       return Response.json(listingFixture);
     }
+    if (call.url.pathname === `/2.0/folders/${input.folderId}`) {
+      return Response.json({ id: input.folderId, name: "synthetic-restricted-folder" });
+    }
     throw new Error("Unexpected fixture request");
   };
   return { request, calls };
@@ -90,9 +94,9 @@ describe("Box synthetic permissions experiment", () => {
     const { request, calls } = fixtureTransport();
     const result = await verifyBoxPermissions(input, request);
     expect(result.verified).toBe(true);
-    expect(result.checks).toHaveLength(10);
+    expect(result.checks).toHaveLength(11);
     expect(result.checks.every((check) => check.status === "passed")).toBe(true);
-    expect(calls).toHaveLength(10);
+    expect(calls).toHaveLength(11);
     expect(calls.every((call) => call.url.origin === "https://api.box.com")).toBe(true);
     expect(calls.every((call) => call.init.redirect === "manual")).toBe(true);
     expect(calls.every((call) => call.init.signal instanceof AbortSignal)).toBe(true);
@@ -120,6 +124,7 @@ describe("Box synthetic permissions experiment", () => {
       restrictedToken,
       previewUrl,
       "synthetic-sensitive-name.pdf",
+      "synthetic-restricted-folder",
     ]) {
       expect(JSON.stringify(result)).not.toContain(secret);
     }
@@ -239,6 +244,8 @@ describe("Box synthetic permissions experiment", () => {
     { ...tokenFixture, access_token: input.accessToken },
     { ...tokenFixture, access_token: "bad\r\ntoken" },
     { ...tokenFixture, token_type: "unexpected" },
+    { ...tokenFixture, expires_in: 0 },
+    { ...tokenFixture, refresh_token: "unexpected" },
     { ...tokenFixture, restricted_to: [] },
     {
       ...tokenFixture,
@@ -287,6 +294,23 @@ describe("Box synthetic permissions experiment", () => {
     }
   );
 
+  it.each([
+    new Response(null, { status: 403 }),
+    Response.json({ id: "999", name: "Wrong folder" }),
+    Response.json({ id: input.folderId, name: null }),
+  ])("requires permission to read the requested folder name %#", async (response) => {
+    const { request, calls } = fixtureTransport((_, index) =>
+      index === 10 ? response : undefined
+    );
+    const result = await verifyBoxPermissions(input, request);
+    expect(result.verified).toBe(false);
+    expect(result.checks.at(-1)).toEqual({
+      check: "restricted folder name lookup",
+      status: "inconclusive",
+    });
+    expect(calls[10]?.url.searchParams.get("fields")).toBe("id,name");
+  });
+
   it("does not treat an expired restricted token as successful denials", async () => {
     const { request, calls } = fixtureTransport((_, index) =>
       index === 5 ? new Response(null, { status: 401 }) : undefined
@@ -332,7 +356,7 @@ describe("Box synthetic permissions experiment", () => {
     "accepts explicit denial %i with valid positive controls",
     async (status) => {
       const { request } = fixtureTransport((_, index) =>
-        index >= 6 ? new Response(null, { status }) : undefined
+        index >= 6 && index <= 9 ? new Response(null, { status }) : undefined
       );
       expect((await verifyBoxPermissions(input, request)).verified).toBe(true);
     }

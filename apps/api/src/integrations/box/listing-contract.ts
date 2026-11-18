@@ -151,3 +151,35 @@ export async function listingJson(response: Response): Promise<unknown> {
     );
   }
 }
+
+export function readRestrictedFolderToken(
+  value: unknown,
+  parentToken: string,
+  folderId: string
+): string {
+  const data = record(value);
+  const restrictions = data.restricted_to;
+  if (
+    !isBoxBearer(data.access_token) ||
+    data.access_token === parentToken ||
+    data.token_type !== "bearer" ||
+    data.refresh_token != null ||
+    typeof data.expires_in !== "number" ||
+    !Number.isSafeInteger(data.expires_in) ||
+    data.expires_in <= 0 ||
+    !Array.isArray(restrictions) ||
+    restrictions.length !== 1
+  )
+    throw new BoxListingError("upstream");
+
+  const restriction = record(restrictions[0]);
+  const object = record(restriction.object);
+  if (
+    restriction.scope !== "base_explorer" ||
+    object.type !== "folder" ||
+    object.id !== folderId
+  ) {
+    throw new BoxListingError("upstream");
+  }
+  return data.access_token;
+}
