@@ -54,7 +54,11 @@ export async function chat(
   }
 
   const json = (await res.json()) as ChatResponse;
-  return json.choices[0].message.content;
+  const choice = json.choices[0];
+  if (!choice) {
+    throw new Error("OpenRouter response contained no choices");
+  }
+  return choice.message.content;
 }
 
 export async function ask(

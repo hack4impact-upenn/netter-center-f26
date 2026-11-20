@@ -11,7 +11,7 @@ export function parseRSSItems(xml: string): FeedItem[] {
 
   let match;
   while ((match = itemRegex.exec(xml)) !== null) {
-    const itemXml = match[1];
+    const itemXml = match[1] ?? "";
     items.push({
       title: extractTag(itemXml, "title"),
       link: extractTag(itemXml, "link"),
@@ -28,5 +28,5 @@ export function extractTag(xml: string, tag: string): string {
     xml.match(
       new RegExp(`<${tag}><!\\[CDATA\\[([\\s\\S]*?)\\]\\]></${tag}>`)
     ) ?? xml.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`));
-  return match ? match[1].trim() : "";
+  return match?.[1]?.trim() ?? "";
 }

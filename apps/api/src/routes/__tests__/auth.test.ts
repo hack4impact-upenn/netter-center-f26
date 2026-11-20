@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, mock, beforeEach } from "bun:test";
 import { Hono } from "hono";
 
-const mockQuery = mock(() => Promise.resolve([]));
+const mockQuery = mock((): Promise<unknown[]> => Promise.resolve([]));
 const mockExecute = mock(() => Promise.resolve());
 
 mock.module("../../integrations/database", () => ({

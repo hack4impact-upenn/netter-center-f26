@@ -29,7 +29,7 @@ export async function query<T = unknown>(
   const json = (await res.json()) as {
     result: { results: T[] }[];
   };
-  return json.result[0].results;
+  return json.result[0]?.results ?? [];
 }
 
 export async function execute(

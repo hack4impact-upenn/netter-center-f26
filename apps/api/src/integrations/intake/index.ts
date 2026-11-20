@@ -1,4 +1,4 @@
-import { parseRSSItems } from "./parser";
+import { parseRSSItems, type FeedItem } from "./parser";
 export { parseRSSItems, extractTag } from "./parser";
 export type { FeedItem } from "./parser";
 
