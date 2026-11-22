@@ -97,13 +97,16 @@ export function createBoxOAuth(
   }
 
   return {
-    authorizationUrl(state: string) {
+    authorizationUrl(
+      state: string,
+      scope: "root_readonly" | "root_readonly root_readwrite" = "root_readonly"
+    ) {
       const url = new URL("https://account.box.com/api/oauth2/authorize");
       url.search = new URLSearchParams({
         response_type: "code",
         client_id: config.clientId,
         redirect_uri: config.redirectUri,
-        scope: "root_readonly",
+        scope,
         state,
       }).toString();
       return url.href;

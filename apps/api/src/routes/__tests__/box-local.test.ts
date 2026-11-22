@@ -10,10 +10,15 @@ const config = {
   redirectUri: origin + callback,
 };
 
-function fixture({ secondStudentPageFails = false } = {}) {
+function fixture({
+  secondStudentPageFails = false,
+  enableFolderCreation = false,
+  writeStatuses = new Map<string, number>(),
+} = {}) {
   let now = Date.now();
   const oauthCalls: string[] = [];
   const metadataCalls: string[] = [];
+  const folderWrites: { name: string; parent: { id: string } }[] = [];
   const oauth = createBoxOAuth(
     config,
     async (url) => {
@@ -38,8 +43,19 @@ function fixture({ secondStudentPageFails = false } = {}) {
           "Bearer private-access"
         );
         expect(init.redirect).toBe("error");
-        metadataCalls.push(url);
         const path = new URL(url);
+        if (init.method === "POST") {
+          expect(path.origin + path.pathname).toBe("https://api.box.com/2.0/folders");
+          expect(path.searchParams.get("fields")).toBe("id,type,name,parent");
+          expect(new Headers(init.headers).get("Content-Type")).toBe("application/json");
+          const folder = JSON.parse(String(init.body)) as (typeof folderWrites)[number];
+          folderWrites.push(folder);
+          const status = writeStatuses.get(folder.name) ?? 201;
+          return status === 201
+            ? Response.json({ ...folder, type: "folder", id: "999" }, { status })
+            : Response.json({ message: "private upstream details" }, { status });
+        }
+        metadataCalls.push(url);
         const id = path.pathname.split("/")[3];
         if (!path.pathname.endsWith("/items")) {
           const name =
@@ -93,15 +109,22 @@ function fixture({ secondStudentPageFails = false } = {}) {
               next_marker: null,
             });
       },
-      () => now
+      () => now,
+      enableFolderCreation
     );
   const app = makeApp();
   const get = (path: string, cookie?: string) =>
     app.request(origin + path, { headers: cookie ? { Cookie: cookie } : {} });
-  const post = (path: string, cookie?: string) =>
+  const post = (
+    path: string,
+    cookie?: string,
+    body?: URLSearchParams | FormData,
+    requestOrigin = origin
+  ) =>
     app.request(origin + path, {
       method: "POST",
-      headers: { Origin: origin, ...(cookie ? { Cookie: cookie } : {}) },
+      headers: { Origin: requestOrigin, ...(cookie ? { Cookie: cookie } : {}) },
+      body,
     });
   function browserCookie(response: Response, name: string) {
     const cookie = response.headers
@@ -117,7 +140,9 @@ function fixture({ secondStudentPageFails = false } = {}) {
     expect(response.status).toBe(303);
     const authorization = new URL(response.headers.get("Location") ?? "");
     expect(authorization.origin).toBe("https://account.box.com");
-    expect(authorization.searchParams.get("scope")).toBe("root_readonly");
+    expect(authorization.searchParams.get("scope")).toBe(
+      enableFolderCreation ? "root_readonly root_readwrite" : "root_readonly"
+    );
     return {
       path: callback + "?code=fixture&state=" + authorization.searchParams.get("state"),
       cookie: browserCookie(response, "netter_box_local_attempt"),
@@ -139,10 +164,17 @@ function fixture({ secondStudentPageFails = false } = {}) {
     connect,
     oauthCalls,
     metadataCalls,
+    folderWrites,
     expire: () => {
       now += 3600_000;
     },
   };
+}
+
+function csvForm(content: string) {
+  const form = new FormData();
+  form.append("csv", new File([content], "students.csv", { type: "text/csv" }));
+  return form;
 }
 
 describe("standalone Box viewer", () => {
@@ -156,7 +188,12 @@ describe("standalone Box viewer", () => {
       origin,
       hostname: "localhost",
       port: 3001,
+      enableFolderCreation: false,
     });
+    expect(
+      readLocalBoxConfig({ ...env, BOX_LOCAL_ENABLE_FOLDER_CREATION: "true" })
+        .enableFolderCreation
+    ).toBe(true);
     expect(() => readLocalBoxConfig({ ...env, NODE_ENV: "production" })).toThrow(
       "loopback callback"
     );
@@ -303,5 +340,126 @@ describe("standalone Box viewer", () => {
     expect(f.oauthCalls.at(-1)).toBe("https://api.box.com/oauth2/revoke");
     expect(await (await f.get("/", session)).text()).toContain("Sign in with Box");
     expect(f.metadataCalls).toEqual([]);
+  });
+
+  it("gates both write routes on viewer configuration, a live session, and a same-origin POST", async () => {
+    const readonly = fixture();
+    const { session: readSession } = await readonly.connect();
+    expect(await (await readonly.get("/", readSession)).text()).not.toContain(
+      "Add student folders"
+    );
+    const writable = fixture({ enableFolderCreation: true });
+    const { session } = await writable.connect();
+    const submissions = [
+      ["/folders/0/create", new URLSearchParams({ name: "John Smith" })],
+      ["/folders/0/import", csvForm("John,Smith")],
+    ] as const;
+    for (const [path, body] of submissions) {
+      expect((await readonly.post(path, readSession, body)).status).toBe(404);
+      expect((await writable.post(path, undefined, body)).status).toBe(401);
+      expect(
+        (await writable.post(path, session, body, "https://other.test")).status
+      ).toBe(403);
+    }
+    writable.expire();
+    for (const [path, body] of submissions) {
+      expect((await writable.post(path, session, body)).status).toBe(401);
+    }
+    expect(readonly.folderWrites).toEqual([]);
+    expect(writable.folderWrites).toEqual([]);
+  });
+
+  it("validates manual input and creates exactly one normalized folder in the selected parent", async () => {
+    const f = fixture({ enableFolderCreation: true });
+    const { session } = await f.connect();
+    const root = await (await f.get("/", session)).text();
+    expect(root).toContain('action="/folders/0/create"');
+    expect(root).toContain('action="/folders/0/import"');
+    const path = "/folders/457/create";
+    expect((await f.post(path, session, csvForm("John,Smith"))).status).toBe(415);
+    for (const name of [
+      "John",
+      "John Smith/Other",
+      "John Smith_Name",
+      "John " + "x".repeat(256),
+    ]) {
+      expect((await f.post(path, session, new URLSearchParams({ name }))).status).toBe(
+        400
+      );
+    }
+    const name = new URLSearchParams({ name: "  John   Smith  " });
+    expect((await f.post("/folders/%2e%2e%2f123/create", session, name)).status).toBe(
+      400
+    );
+    expect(f.folderWrites).toEqual([]);
+
+    const response = await f.post(path, session, name);
+    expect(response.status).toBe(201);
+    expect(await response.text()).toContain('<a href="/folders/999">SMITH_JOHN</a>');
+    expect(f.folderWrites).toEqual([{ name: "SMITH_JOHN", parent: { id: "457" } }]);
+  });
+
+  it("validates the entire CSV before any writes, then imports distinct names and reports Box conflicts", async () => {
+    const f = fixture({
+      enableFolderCreation: true,
+      writeStatuses: new Map([["SMITH_JOHN", 409]]),
+    });
+    const { session } = await f.connect();
+    const path = "/folders/0/import";
+    expect(
+      (await f.post(path, session, new URLSearchParams({ csv: "John,Smith" }))).status
+    ).toBe(415);
+    for (const csv of [
+      "",
+      "John,Smith\nMary",
+      'John,Smith\n"broken',
+      "John,Smith,Other",
+      "John,Smith\nMary,",
+      "John,Smith\n".repeat(101),
+    ]) {
+      expect((await f.post(path, session, csvForm(csv))).status).toBe(400);
+    }
+    expect((await f.post(path, session, csvForm("x".repeat(65_537)))).status).toBe(413);
+    expect(f.folderWrites).toEqual([]);
+
+    const response = await f.post(
+      path,
+      session,
+      csvForm(
+        '\ufeffFirst Name,Last Name\r\nJohn,Smith\r\n"Ana María","de la Cruz"\r\njohn,smith\r\n'
+      )
+    );
+    expect(response.status).toBe(200);
+    const result = await response.text();
+    expect(result).toContain("SMITH_JOHN — Name already in use");
+    expect(result).toContain(">DE LA CRUZ_ANA MARÍA</a> — Created");
+    expect(result).toContain("Repeated names skipped: 1");
+    expect(result).not.toContain("private upstream details");
+    expect(f.folderWrites).toEqual([
+      { name: "SMITH_JOHN", parent: { id: "0" } },
+      { name: "DE LA CRUZ_ANA MARÍA", parent: { id: "0" } },
+    ]);
+  });
+
+  it("reports a partial import and stops further writes when Box rate limits it", async () => {
+    const f = fixture({
+      enableFolderCreation: true,
+      writeStatuses: new Map([["JONES_JANE", 429]]),
+    });
+    const { session } = await f.connect();
+    const response = await f.post(
+      "/folders/457/import",
+      session,
+      csvForm("John,Smith\nJane,Jones\nAlex,Lee")
+    );
+    expect(response.status).toBe(200);
+    const result = await response.text();
+    expect(result).toContain(">SMITH_JOHN</a> — Created");
+    expect(result).toContain("JONES_JANE — Box is rate limiting creation");
+    expect(result).toContain("LEE_ALEX — Not attempted");
+    expect(f.folderWrites).toEqual([
+      { name: "SMITH_JOHN", parent: { id: "457" } },
+      { name: "JONES_JANE", parent: { id: "457" } },
+    ]);
   });
 });

@@ -3,6 +3,10 @@ import { Hono, type Context } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { html } from "hono/html";
 import {
+  createBoxFolder,
+  FOLDER_CREATION_RESULTS,
+} from "../integrations/box/folder-creation";
+import {
   readBoxFolderItems,
   readBoxFolderMetadata,
 } from "../integrations/box/folder-metadata";
@@ -14,6 +18,12 @@ import {
   type BoxFetch,
 } from "../integrations/box/listing-contract";
 import type { createBoxOAuth } from "../integrations/box/oauth";
+import {
+  csvStudentFolderNames,
+  manualStudentFolderName,
+  MAX_CSV_BYTES,
+  MAX_CSV_NAMES,
+} from "../integrations/box/student-folder-names";
 
 const CALLBACK = "/api/box/oauth/callback";
 const ATTEMPT_COOKIE = "netter_box_local_attempt";
@@ -77,7 +87,16 @@ export function readLocalBoxConfig(
   }
   // Preserve the registered hostname, including localhost on IPv6 systems.
   const origin = redirectUri.slice(0, -CALLBACK.length);
-  return { clientId, clientSecret, redirectUri, origin, hostname, port };
+  const enableFolderCreation = env.BOX_LOCAL_ENABLE_FOLDER_CREATION === "true";
+  return {
+    clientId,
+    clientSecret,
+    redirectUri,
+    origin,
+    hostname,
+    port,
+    enableFolderCreation,
+  };
 }
 
 function page(content: ReturnType<typeof html>) {
@@ -119,6 +138,31 @@ function page(content: ReturnType<typeof html>) {
 const signIn = html`<p><a href="/signin">Sign in with Box</a></p>`;
 const navigation = html`<p><a href="/">All files and folders</a></p>
   <form method="post" action="/signout"><button>Sign out</button></form>`;
+
+function folderCreationForms(parentId: string, folderName: string) {
+  return html`<section>
+    <h3>Add student folders</h3>
+    <p>Create folders in <strong>${folderName}</strong>.</p>
+    <form method="post" action="/folders/${parentId}/create">
+      <label>Student name <input name="name" placeholder="John Smith" required /></label>
+      <button>Create folder</button>
+    </form>
+    <form
+      method="post"
+      action="/folders/${parentId}/import"
+      enctype="multipart/form-data"
+    >
+      <p>
+        CSV format: first name in column A, last name in column B. Up to ${MAX_CSV_NAMES}
+        names.
+      </p>
+      <label
+        >Names CSV <input type="file" name="csv" accept=".csv,text/csv" required
+      /></label>
+      <button>Import CSV</button>
+    </form>
+  </section>`;
+}
 
 function readFolderEntries(rawEntries: unknown[]) {
   const entries = [];
@@ -185,7 +229,8 @@ export function createLocalBoxApp(
   origin: string,
   oauth: OAuth,
   request?: BoxFetch,
-  now = Date.now
+  now = Date.now,
+  enableFolderCreation = false
 ) {
   const app = new Hono();
   let attempt:
@@ -193,6 +238,11 @@ export function createLocalBoxApp(
     | undefined;
   let session: (Awaited<ReturnType<OAuth["exchange"]>> & { id: string }) | undefined;
   const secret = () => randomBytes(32).toString("base64url");
+
+  function activeSession(c: Context) {
+    if (session && session.accessExpiresAt <= now()) session = undefined;
+    return session?.id === getCookie(c, SESSION_COOKIE) ? session : undefined;
+  }
 
   app.use("*", async (c, next) => {
     c.header("Cache-Control", "no-store");
@@ -224,7 +274,8 @@ export function createLocalBoxApp(
       claimed: false,
     };
     setCookie(c, ATTEMPT_COOKIE, attempt.nonce, { ...cookie, maxAge: 600 });
-    return c.redirect(oauth.authorizationUrl(attempt.state), 303);
+    const scope = enableFolderCreation ? "root_readonly root_readwrite" : "root_readonly";
+    return c.redirect(oauth.authorizationUrl(attempt.state, scope), 303);
   });
 
   app.get(CALLBACK, async (c) => {
@@ -294,6 +345,135 @@ export function createLocalBoxApp(
     return c.redirect("/", 303);
   });
 
+  function folderCreationRoute(mode: "create" | "import") {
+    return async (c: Context) => {
+      const parentId = c.req.param("id");
+      if (!enableFolderCreation) return c.notFound();
+      const active = activeSession(c);
+      if (!active)
+        return c.html(
+          page(
+            html`<p>
+              Sign in to create student folders. <a href="/">Back to viewer</a>.
+            </p>`
+          ),
+          401
+        );
+      if (parentId !== "0" && !isBoxId(parentId))
+        return c.text("Invalid parent folder.", 400);
+
+      const destination = parentId === "0" ? "/" : `/folders/${parentId}`;
+      const back = html`<p><a href="${destination}">Back to folder</a></p>`;
+      function invalid(message: string, status: 400 | 413 | 415 = 400) {
+        return c.html(
+          page(
+            html`<p>${message}</p>
+              ${back}`
+          ),
+          status
+        );
+      }
+
+      const csvMode = mode === "import";
+      const expectedType = csvMode
+        ? "multipart/form-data"
+        : "application/x-www-form-urlencoded";
+      if (
+        c.req.header("Content-Type")?.split(";")[0]?.trim().toLowerCase() !== expectedType
+      ) {
+        return invalid("Submit the form from the local viewer.", 415);
+      }
+
+      const form = await c.req.formData().catch(() => null);
+      if (!form) return invalid("Could not read the submitted form.");
+      const entries = form.getAll(csvMode ? "csv" : "name");
+      const [value] = entries;
+      let names: string[];
+      if (csvMode) {
+        if (entries.length !== 1 || !(value instanceof File) || !value.size) {
+          return invalid("Choose one CSV file with student names.");
+        }
+        if (value.size > MAX_CSV_BYTES)
+          return invalid("Use a CSV file no larger than 64 KiB.", 413);
+        let csv: string;
+        try {
+          csv = new TextDecoder("utf-8", { fatal: true }).decode(
+            await value.arrayBuffer()
+          );
+        } catch {
+          return invalid("Save the CSV as UTF-8 and try again.");
+        }
+        const parsed = csvStudentFolderNames(csv);
+        if ("error" in parsed) return invalid(parsed.error);
+        names = parsed.names;
+      } else {
+        const name = typeof value === "string" ? manualStudentFolderName(value) : null;
+        if (entries.length !== 1 || !name) {
+          return invalid("Enter a first and last name, such as John Smith.");
+        }
+        names = [name];
+      }
+
+      const uniqueNames = new Set(names);
+      const rows = [];
+      const duplicateCount = names.length - uniqueNames.size;
+      let stopped = false;
+      let status: 200 | keyof typeof FOLDER_CREATION_RESULTS = 200;
+      for (const name of uniqueNames) {
+        if (stopped) {
+          rows.push(html`<li>${name} — Not attempted</li>`);
+          continue;
+        }
+        if (activeSession(c) !== active || c.req.raw.signal.aborted) {
+          return c.html(
+            page(
+              html`<p>Sign in again and check the destination folder before retrying.</p>
+                ${back}`
+            ),
+            401
+          );
+        }
+        const result = await createBoxFolder(
+          parentId,
+          name,
+          active.tokens.accessToken,
+          request
+        );
+        if (activeSession(c) !== active) {
+          return c.html(
+            page(
+              html`<p>Sign in again and check the destination folder before retrying.</p>
+                ${back}`
+            ),
+            401
+          );
+        }
+        if (result.status === 401) session = undefined;
+        if (!csvMode) status = result.status;
+        stopped = result.status !== 201 && result.status !== 400 && result.status !== 409;
+        const item =
+          result.status === 201
+            ? html`<a href="/folders/${result.id}">${name}</a>`
+            : name;
+        rows.push(html`<li>${item} — ${FOLDER_CREATION_RESULTS[result.status]}</li>`);
+      }
+
+      return c.html(
+        page(
+          html`<h2>Folder creation results</h2>
+            <ul>
+              ${rows}
+            </ul>
+            ${duplicateCount
+              ? html`<p>Repeated names skipped: ${duplicateCount}.</p>`
+              : ""}
+            ${back}`
+        ),
+        status
+      );
+    };
+  }
+
   async function browse(c: Context, folderId: string) {
     const params = new URL(c.req.url).searchParams;
     const suppliedMarker = params.get("marker");
@@ -309,10 +489,9 @@ export function createLocalBoxApp(
         400
       );
 
-    if (session && session.accessExpiresAt <= now()) session = undefined;
-    const active = session;
-    if (signInFailed || !active || getCookie(c, SESSION_COOKIE) !== active.id) {
-      if (folderId !== "0" && !active) return c.redirect("/", 303);
+    const active = activeSession(c);
+    if (signInFailed || !active) {
+      if (folderId !== "0" && !session) return c.redirect("/", 303);
       return c.html(
         page(html`
           ${signInFailed
@@ -382,6 +561,7 @@ export function createLocalBoxApp(
         page(
           html`${navigation}
             <h2>${folderName}</h2>
+            ${enableFolderCreation ? folderCreationForms(folderId, folderName) : ""}
             ${items.length
               ? html`<ul>
                   ${items}
@@ -422,5 +602,7 @@ export function createLocalBoxApp(
 
   app.get("/", (c) => browse(c, "0"));
   app.get("/folders/:id", (c) => browse(c, c.req.param("id")));
+  app.post("/folders/:id/create", folderCreationRoute("create"));
+  app.post("/folders/:id/import", folderCreationRoute("import"));
   return app;
 }

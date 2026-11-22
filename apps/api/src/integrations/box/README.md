@@ -39,10 +39,31 @@ revocation. When the process stops or the access token expires, sign in again.
 D1, an app login, the listing worker, and an encryption key are unnecessary
 for this viewer.
 
-This personal viewer makes fixed folder metadata requests with the signed-in
-user's read-only OAuth token. It renders folder names and filenames as text.
-The regular API's folder-grant and live permission checks still apply to its
-separate listing endpoint.
+By default, the viewer uses the signed-in user's read-only OAuth token. It
+renders folder names and filenames as text. The regular API's folder-grant and
+live permission checks still apply to its separate listing endpoint.
+
+### Create student folders from the local viewer
+
+1. In the dedicated local OAuth app's Box Developer Console configuration, enable
+   **Read and write all files and folders** and keep **Read all files and folders** enabled.
+2. Set `BOX_LOCAL_ENABLE_FOLDER_CREATION=true` in `apps/api/.env`, restart
+   `bun run dev:box`, and sign in again to authorize the write scope. Box's
+   write scope is broader than folder creation, so use a test account or test
+   data. The viewer only sends a folder-create request for these forms.
+   See [Box API scopes](https://developer.box.com/guides/api-calls/permissions-and-errors/scopes).
+3. Open the destination in the viewer and use **Create folder** or **Import CSV**.
+   On **All Files**, folders are created at the account root. `John Smith`
+   becomes `SMITH_JOHN`. Manual entry treats the last word as the surname.
+   Use CSV for surnames that contain spaces.
+
+The CSV is UTF-8 with first names in column A and last names in column B. A
+`First Name,Last Name` header is optional. The viewer accepts up to 100 names
+in a file of up to 64 KiB, validates the entire file before writing, and skips
+duplicate names within the file. Results show which folders were created and
+which names are already in use. After a permission error, rate limit, or
+unconfirmed write, the results also show which remaining names were unattempted.
+The CSV is parsed locally. Only the generated folder names are sent to Box.
 
 This work is limited to backend Box integration. The production frontend is
 owned by another team; `apps/web` is outside this work's scope. Step 5 will add
