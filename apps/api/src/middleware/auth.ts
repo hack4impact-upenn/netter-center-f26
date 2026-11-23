@@ -1,14 +1,18 @@
 import { createMiddleware } from "hono/factory";
 import { query } from "../integrations/database";
-import type { AppEnv } from "../types";
+import type { AppEnv, UserRole } from "../types";
 
-type Session = {
+type SessionWithRole = {
   user_id: string;
   expires_at: string;
+  role: UserRole;
 };
 
+/**
+ * Validates Bearer token and sets userId + userRole on context.
+ */
 export function createRequireAuth(
-  findSessions = (sql: string, params: unknown[]) => query<Session>(sql, params)
+  findSessions = (sql: string, params: unknown[]) => query<SessionWithRole>(sql, params)
 ) {
   return createMiddleware<AppEnv>(async (c, next) => {
     const header = c.req.header("Authorization");
@@ -20,7 +24,10 @@ export function createRequireAuth(
     const token = header.slice(7);
 
     const [session] = await findSessions(
-      "SELECT user_id, expires_at FROM sessions WHERE token = ? AND julianday(expires_at) > julianday('now')",
+      `SELECT s.user_id, s.expires_at, u.role
+       FROM sessions s
+       JOIN users u ON u.id = s.user_id
+       WHERE s.token = ? AND julianday(s.expires_at) > julianday('now')`,
       [token]
     );
 
@@ -29,8 +36,20 @@ export function createRequireAuth(
     }
 
     c.set("userId", session.user_id);
+    c.set("userRole", session.role);
     await next();
   });
 }
 
 export const requireAuth = createRequireAuth();
+
+/**
+ * Must be placed AFTER requireAuth. Rejects non-admin users with 403.
+ */
+export const requireAdmin = createMiddleware<AppEnv>(async (c, next) => {
+  const role = c.get("userRole");
+  if (role !== "admin") {
+    return c.json({ error: "Admin access required" }, 403);
+  }
+  await next();
+});
