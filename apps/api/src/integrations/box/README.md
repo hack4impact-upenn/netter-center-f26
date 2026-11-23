@@ -47,10 +47,11 @@ live permission checks still apply to its separate listing endpoint.
 
 1. In the dedicated local OAuth app's Box Developer Console configuration, enable
    **Read and write all files and folders** and keep **Read all files and folders** enabled.
-2. Set `BOX_LOCAL_ENABLE_FOLDER_CREATION=true` in `apps/api/.env`, restart
-   `bun run dev:box`, and sign in again to authorize the write scope. Box's
-   write scope is broader than folder creation, so use a test account or test
-   data. The viewer only sends a folder-create request for these forms.
+2. Sign in to the local viewer, open the destination, and select **Enable folder
+   creation**. Approve the requested access in Box. The viewer returns to the
+   destination and displays the creation forms. Box's write scope is broader
+   than folder creation. The viewer only sends a folder-create request for
+   these forms.
    See [Box API scopes](https://developer.box.com/guides/api-calls/permissions-and-errors/scopes).
 3. Open the destination in the viewer and use **Create folder** or **Import CSV**.
    On **All Files**, folders are created at the account root. `John Smith`

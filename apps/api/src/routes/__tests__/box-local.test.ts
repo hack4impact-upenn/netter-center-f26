@@ -12,7 +12,6 @@ const config = {
 
 function fixture({
   secondStudentPageFails = false,
-  enableFolderCreation = false,
   writeStatuses = new Map<string, number>(),
 } = {}) {
   let now = Date.now();
@@ -109,8 +108,7 @@ function fixture({
               next_marker: null,
             });
       },
-      () => now,
-      enableFolderCreation
+      () => now
     );
   const app = makeApp();
   const get = (path: string, cookie?: string) =>
@@ -133,27 +131,36 @@ function fixture({
     if (!cookie) throw new Error("Missing browser cookie");
     return cookie.split(";")[0] ?? "";
   }
-  async function start() {
-    const response = await app.request(origin + "/signin", {
-      headers: { "Sec-Fetch-Site": "same-origin" },
+  async function start(upgrade?: { folderId: string; session: string }) {
+    const path = upgrade ? `/signin?writeTo=${upgrade.folderId}` : "/signin";
+    const response = await app.request(origin + path, {
+      headers: {
+        "Sec-Fetch-Site": "same-origin",
+        ...(upgrade ? { Cookie: upgrade.session } : {}),
+      },
     });
     expect(response.status).toBe(303);
     const authorization = new URL(response.headers.get("Location") ?? "");
     expect(authorization.origin).toBe("https://account.box.com");
     expect(authorization.searchParams.get("scope")).toBe(
-      enableFolderCreation ? "root_readonly root_readwrite" : "root_readonly"
+      upgrade ? "root_readonly root_readwrite" : "root_readonly"
     );
     return {
       path: callback + "?code=fixture&state=" + authorization.searchParams.get("state"),
       cookie: browserCookie(response, "netter_box_local_attempt"),
     };
   }
-  async function connect() {
-    const attempt = await start();
+  async function connect(upgrade?: { folderId: string; session: string }) {
+    const attempt = await start(upgrade);
     const response = await get(attempt.path, attempt.cookie);
-    expect(response.headers.get("Location")).toBe("/");
+    expect(response.headers.get("Location")).toBe(
+      upgrade && upgrade.folderId !== "0" ? `/folders/${upgrade.folderId}` : "/"
+    );
     expect(response.headers.get("Referrer-Policy")).toBe("no-referrer");
     return { ...attempt, session: browserCookie(response, "netter_box_local_session") };
+  }
+  async function connectWritable() {
+    return connect({ folderId: "0", session: (await connect()).session });
   }
   return {
     app,
@@ -162,6 +169,7 @@ function fixture({
     post,
     start,
     connect,
+    connectWritable,
     oauthCalls,
     metadataCalls,
     folderWrites,
@@ -188,12 +196,7 @@ describe("standalone Box viewer", () => {
       origin,
       hostname: "localhost",
       port: 3001,
-      enableFolderCreation: false,
     });
-    expect(
-      readLocalBoxConfig({ ...env, BOX_LOCAL_ENABLE_FOLDER_CREATION: "true" })
-        .enableFolderCreation
-    ).toBe(true);
     expect(() => readLocalBoxConfig({ ...env, NODE_ENV: "production" })).toThrow(
       "loopback callback"
     );
@@ -342,36 +345,62 @@ describe("standalone Box viewer", () => {
     expect(f.metadataCalls).toEqual([]);
   });
 
-  it("gates both write routes on viewer configuration, a live session, and a same-origin POST", async () => {
-    const readonly = fixture();
-    const { session: readSession } = await readonly.connect();
-    expect(await (await readonly.get("/", readSession)).text()).not.toContain(
-      "Add student folders"
-    );
-    const writable = fixture({ enableFolderCreation: true });
-    const { session } = await writable.connect();
+  it("gates both write routes on successful Box write authorization and same-origin POSTs", async () => {
+    const f = fixture();
+    const { session: readSession } = await f.connect();
+    const folder = await (await f.get("/folders/457", readSession)).text();
+    expect(folder).toContain('href="/signin?writeTo=457">Enable folder creation</a>');
+    expect(folder).not.toContain("Add student folders");
     const submissions = [
       ["/folders/0/create", new URLSearchParams({ name: "John Smith" })],
       ["/folders/0/import", csvForm("John,Smith")],
     ] as const;
     for (const [path, body] of submissions) {
-      expect((await readonly.post(path, readSession, body)).status).toBe(404);
-      expect((await writable.post(path, undefined, body)).status).toBe(401);
-      expect(
-        (await writable.post(path, session, body, "https://other.test")).status
-      ).toBe(403);
+      expect((await f.post(path, readSession, body)).status).toBe(403);
+      expect((await f.post(path, undefined, body)).status).toBe(401);
     }
-    writable.expire();
+    const headers = { "Sec-Fetch-Site": "same-origin", Cookie: readSession };
+    const wrongFolder = await f.app.request(origin + "/signin?writeTo=%2F%2Fother.test", {
+      headers,
+    });
+    expect(wrongFolder.status).toBe(400);
+    expect(
+      (
+        await f.app.request(origin + "/signin?writeTo=457", {
+          headers: { ...headers, "Sec-Fetch-Site": "cross-site" },
+        })
+      ).status
+    ).toBe(403);
+
+    const denied = await f.start({ folderId: "457", session: readSession });
+    const rejection = await f.get(
+      denied.path.replace("code=fixture", "error=access_denied"),
+      denied.cookie
+    );
+    expect(rejection.headers.get("Location")).toBe("/folders/457?write=failed");
+    const retry = await (await f.get("/folders/457?write=failed", readSession)).text();
+    expect(retry).toContain("Box write authorization did not complete");
+    expect(retry).toContain("Enable folder creation");
+    expect(retry).not.toContain("Add student folders");
+
+    const { session } = await f.connect({ folderId: "457", session: readSession });
+    expect(await (await f.get("/folders/457", session)).text()).toContain(
+      'action="/folders/457/create"'
+    );
     for (const [path, body] of submissions) {
-      expect((await writable.post(path, session, body)).status).toBe(401);
+      expect((await f.post(path, readSession, body)).status).toBe(401);
+      expect((await f.post(path, session, body, "https://other.test")).status).toBe(403);
     }
-    expect(readonly.folderWrites).toEqual([]);
-    expect(writable.folderWrites).toEqual([]);
+    f.expire();
+    for (const [path, body] of submissions) {
+      expect((await f.post(path, session, body)).status).toBe(401);
+    }
+    expect(f.folderWrites).toEqual([]);
   });
 
   it("validates manual input and creates exactly one normalized folder in the selected parent", async () => {
-    const f = fixture({ enableFolderCreation: true });
-    const { session } = await f.connect();
+    const f = fixture();
+    const { session } = await f.connectWritable();
     const root = await (await f.get("/", session)).text();
     expect(root).toContain('action="/folders/0/create"');
     expect(root).toContain('action="/folders/0/import"');
@@ -401,10 +430,9 @@ describe("standalone Box viewer", () => {
 
   it("validates the entire CSV before any writes, then imports distinct names and reports Box conflicts", async () => {
     const f = fixture({
-      enableFolderCreation: true,
       writeStatuses: new Map([["SMITH_JOHN", 409]]),
     });
-    const { session } = await f.connect();
+    const { session } = await f.connectWritable();
     const path = "/folders/0/import";
     expect(
       (await f.post(path, session, new URLSearchParams({ csv: "John,Smith" }))).status
@@ -443,10 +471,9 @@ describe("standalone Box viewer", () => {
 
   it("reports a partial import and stops further writes when Box rate limits it", async () => {
     const f = fixture({
-      enableFolderCreation: true,
       writeStatuses: new Map([["JONES_JANE", 429]]),
     });
-    const { session } = await f.connect();
+    const { session } = await f.connectWritable();
     const response = await f.post(
       "/folders/457/import",
       session,

@@ -87,16 +87,7 @@ export function readLocalBoxConfig(
   }
   // Preserve the registered hostname, including localhost on IPv6 systems.
   const origin = redirectUri.slice(0, -CALLBACK.length);
-  const enableFolderCreation = env.BOX_LOCAL_ENABLE_FOLDER_CREATION === "true";
-  return {
-    clientId,
-    clientSecret,
-    redirectUri,
-    origin,
-    hostname,
-    port,
-    enableFolderCreation,
-  };
+  return { clientId, clientSecret, redirectUri, origin, hostname, port };
 }
 
 function page(content: ReturnType<typeof html>) {
@@ -138,6 +129,10 @@ function page(content: ReturnType<typeof html>) {
 const signIn = html`<p><a href="/signin">Sign in with Box</a></p>`;
 const navigation = html`<p><a href="/">All files and folders</a></p>
   <form method="post" action="/signout"><button>Sign out</button></form>`;
+
+function folderPath(id: string) {
+  return id === "0" ? "/" : `/folders/${id}`;
+}
 
 function folderCreationForms(parentId: string, folderName: string) {
   return html`<section>
@@ -229,14 +224,21 @@ export function createLocalBoxApp(
   origin: string,
   oauth: OAuth,
   request?: BoxFetch,
-  now = Date.now,
-  enableFolderCreation = false
+  now = Date.now
 ) {
   const app = new Hono();
   let attempt:
-    | { state: string; nonce: string; expiresAt: number; claimed: boolean }
+    | {
+        state: string;
+        nonce: string;
+        expiresAt: number;
+        claimed: boolean;
+        writeTo: string | null;
+      }
     | undefined;
-  let session: (Awaited<ReturnType<OAuth["exchange"]>> & { id: string }) | undefined;
+  let session:
+    | (Awaited<ReturnType<OAuth["exchange"]>> & { id: string; canCreateFolders: boolean })
+    | undefined;
   const secret = () => randomBytes(32).toString("base64url");
 
   function activeSession(c: Context) {
@@ -267,14 +269,21 @@ export function createLocalBoxApp(
     if (c.req.method !== "GET" || c.req.header("Sec-Fetch-Site") !== "same-origin") {
       return c.text("Start sign-in from the local viewer.", 403);
     }
+    const params = new URL(c.req.url).searchParams;
+    const writeTo = params.get("writeTo");
+    if (params.size && (params.size !== 1 || (writeTo !== "0" && !isBoxId(writeTo)))) {
+      return c.text("Invalid folder authorization request.", 400);
+    }
+    if (writeTo !== null && !activeSession(c)) return c.redirect("/", 303);
     attempt = {
       state: secret(),
       nonce: secret(),
       expiresAt: now() + 600_000,
       claimed: false,
+      writeTo,
     };
     setCookie(c, ATTEMPT_COOKIE, attempt.nonce, { ...cookie, maxAge: 600 });
-    const scope = enableFolderCreation ? "root_readonly root_readwrite" : "root_readonly";
+    const scope = writeTo === null ? "root_readonly" : "root_readonly root_readwrite";
     return c.redirect(oauth.authorizationUrl(attempt.state, scope), 303);
   });
 
@@ -301,6 +310,9 @@ export function createLocalBoxApp(
     }
     pending.claimed = true;
     deleteCookie(c, ATTEMPT_COOKIE, cookie);
+    const destination = folderPath(pending.writeTo ?? "0");
+    const failure =
+      pending.writeTo === null ? "/?signin=failed" : `${destination}?write=failed`;
     const code = params.get("code");
     if (
       params.has("error") ||
@@ -309,25 +321,26 @@ export function createLocalBoxApp(
       !/^[\x21-\x7e]{1,2048}$/.test(code)
     ) {
       attempt = undefined;
-      return c.redirect("/?signin=failed", 303);
+      return c.redirect(failure, 303);
     }
 
     try {
       const grant = await oauth.exchange(code);
       if (attempt !== pending || pending.expiresAt <= now()) {
         await oauth.revoke(grant.tokens.refreshToken);
-        return c.redirect("/?signin=failed", 303);
+        return c.redirect(failure, 303);
       }
       const old = session;
-      session = { ...grant, id: secret() };
+      session = { ...grant, id: secret(), canCreateFolders: pending.writeTo !== null };
       setCookie(c, SESSION_COOKIE, session.id, {
         ...cookie,
         maxAge: Math.max(1, Math.floor((grant.accessExpiresAt - now()) / 1000)),
       });
-      if (old) await oauth.revoke(old.tokens.refreshToken);
-      return c.redirect("/", 303);
+      if (old && old.tokens.refreshToken !== grant.tokens.refreshToken)
+        await oauth.revoke(old.tokens.refreshToken);
+      return c.redirect(destination, 303);
     } catch {
-      return c.redirect("/?signin=failed", 303);
+      return c.redirect(failure, 303);
     } finally {
       if (attempt === pending) attempt = undefined;
     }
@@ -348,7 +361,6 @@ export function createLocalBoxApp(
   function folderCreationRoute(mode: "create" | "import") {
     return async (c: Context) => {
       const parentId = c.req.param("id");
-      if (!enableFolderCreation) return c.notFound();
       const active = activeSession(c);
       if (!active)
         return c.html(
@@ -362,8 +374,17 @@ export function createLocalBoxApp(
       if (parentId !== "0" && !isBoxId(parentId))
         return c.text("Invalid parent folder.", 400);
 
-      const destination = parentId === "0" ? "/" : `/folders/${parentId}`;
+      const destination = folderPath(parentId);
       const back = html`<p><a href="${destination}">Back to folder</a></p>`;
+      if (!active.canCreateFolders) {
+        return c.html(
+          page(
+            html`<p>Enable folder creation in the viewer to authorize Box writes.</p>
+              ${back}`
+          ),
+          403
+        );
+      }
       function invalid(message: string, status: 400 | 413 | 415 = 400) {
         return c.html(
           page(
@@ -479,9 +500,12 @@ export function createLocalBoxApp(
     const suppliedMarker = params.get("marker");
     const signInFailed =
       folderId === "0" && params.size === 1 && params.get("signin") === "failed";
+    const writeFailed = params.size === 1 && params.get("write") === "failed";
     if (
       (folderId !== "0" && !isBoxId(folderId)) ||
-      (!signInFailed && params.size > (suppliedMarker === null ? 0 : 1)) ||
+      (!signInFailed &&
+        !writeFailed &&
+        params.size > (suppliedMarker === null ? 0 : 1)) ||
       (suppliedMarker !== null && !isBoxMarker(suppliedMarker))
     )
       return c.html(
@@ -556,12 +580,22 @@ export function createLocalBoxApp(
           requirements = requirementsView(folderName);
         }
       }
-      const path = folderId === "0" ? "/" : "/folders/" + folderId;
+      const path = folderPath(folderId);
       return c.html(
         page(
           html`${navigation}
             <h2>${folderName}</h2>
-            ${enableFolderCreation ? folderCreationForms(folderId, folderName) : ""}
+            ${writeFailed
+              ? html`<p>
+                  Box write authorization did not complete. Check the Box app’s write
+                  permission or try again.
+                </p>`
+              : ""}
+            ${active.canCreateFolders
+              ? folderCreationForms(folderId, folderName)
+              : html`<p>
+                  <a href="/signin?writeTo=${folderId}">Enable folder creation</a>
+                </p>`}
             ${items.length
               ? html`<ul>
                   ${items}
