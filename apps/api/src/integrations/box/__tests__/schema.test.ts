@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { Database } from "bun:sqlite";
-import { NOW, openDatabase, schema, seedUsers } from "./fixtures";
+import { ensureUserRoleColumn } from "../../../../scripts/setup";
+import { NOW, openDatabase, schema, seedUsers, sqliteQuery } from "./fixtures";
 
 describe("Box authorization schema on SQLite", () => {
   let db: Database;
@@ -30,17 +31,25 @@ describe("Box authorization schema on SQLite", () => {
     );
   }
 
-  it("upgrades the original schema and can be reapplied without losing users or sessions", () => {
+  it("upgrades the original schema and can be reapplied without losing users, roles or sessions", async () => {
     const legacy = new Database(":memory:");
     try {
       legacy.exec("PRAGMA foreign_keys = ON");
-      legacy.exec(schema.split("-- Supports a composite")[0] ?? "");
+      const beforeBox = schema.split("-- Box OAuth and folder grants")[0] ?? "";
+      legacy.exec(beforeBox.replace(/^  role TEXT .*\n/m, ""));
       seedUsers(legacy);
       legacy.exec(schema);
+      await ensureUserRoleColumn(sqliteQuery(legacy));
+      expect(legacy.query("SELECT role FROM users ORDER BY id").all()).toEqual([
+        { role: "ta" },
+        { role: "ta" },
+      ]);
+      legacy.run("UPDATE users SET role = 'admin' WHERE id = 'user-1'");
       legacy.exec(schema);
-      expect(legacy.query("SELECT id FROM users ORDER BY id").all()).toEqual([
-        { id: "user-1" },
-        { id: "user-2" },
+      await ensureUserRoleColumn(sqliteQuery(legacy));
+      expect(legacy.query("SELECT id, role FROM users ORDER BY id").all()).toEqual([
+        { id: "user-1", role: "admin" },
+        { id: "user-2", role: "ta" },
       ]);
       expect(legacy.query("SELECT token FROM sessions ORDER BY token").all()).toEqual([
         { token: "session-1" },

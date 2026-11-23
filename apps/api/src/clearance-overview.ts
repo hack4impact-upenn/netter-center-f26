@@ -55,14 +55,14 @@ export type ClearanceOverviewEntry = {
   in_sdp: boolean;
 };
 
-const STATUS_FIELDS: [ClearanceCodeType, keyof OverviewRow][] = [
-  [ClearanceCode.PA_CHILD_ABUSE, "pa_child_abuse_status"],
-  [ClearanceCode.PATCH, "patch_status"],
-  [ClearanceCode.FBI_OR_AFFIDAVIT, "fbi_or_affidavit_status"],
-  [ClearanceCode.MANDATED_REPORTER, "mandated_reporter_status"],
-  [ClearanceCode.SDP_CODE_OF_CONDUCT, "sdp_code_of_conduct_status"],
-  [ClearanceCode.INTL_AFFIDAVIT, "intl_affidavit_status"],
-];
+const STATUS_FIELDS = {
+  [ClearanceCode.PA_CHILD_ABUSE]: "pa_child_abuse_status",
+  [ClearanceCode.PATCH]: "patch_status",
+  [ClearanceCode.FBI_OR_AFFIDAVIT]: "fbi_or_affidavit_status",
+  [ClearanceCode.MANDATED_REPORTER]: "mandated_reporter_status",
+  [ClearanceCode.SDP_CODE_OF_CONDUCT]: "sdp_code_of_conduct_status",
+  [ClearanceCode.INTL_AFFIDAVIT]: "intl_affidavit_status",
+} as const satisfies Record<ClearanceCodeType, keyof OverviewRow>;
 
 function toStudent(row: OverviewRow): StudentForRules {
   return {
@@ -76,10 +76,12 @@ function toStudent(row: OverviewRow): StudentForRules {
 
 function transform(row: OverviewRow): ClearanceOverviewEntry {
   const student = toStudent(row);
-
-  const clearances = STATUS_FIELDS.map(([code, field]) => ({
+  const statusFor = (code: ClearanceCodeType) => row[STATUS_FIELDS[code]] ?? "not_issued";
+  const display = (code: ClearanceCodeType) =>
+    displayStatus(student, code, statusFor(code));
+  const clearances = Object.values(ClearanceCode).map((code) => ({
     code,
-    status: (row[field] as string) ?? "not_issued",
+    status: statusFor(code),
   }));
 
   return {
@@ -89,12 +91,12 @@ function transform(row: OverviewRow): ClearanceOverviewEntry {
     compliant: isCompliant(student, clearances),
     courses: row.courses ?? "",
     programs: row.programs ?? "",
-    pa_child_abuse: displayStatus(student, ClearanceCode.PA_CHILD_ABUSE, clearances[0].status),
-    patch: displayStatus(student, ClearanceCode.PATCH, clearances[1].status),
-    fbi_or_affidavit: displayStatus(student, ClearanceCode.FBI_OR_AFFIDAVIT, clearances[2].status),
-    mandated_reporter: displayStatus(student, ClearanceCode.MANDATED_REPORTER, clearances[3].status),
-    sdp_code_of_conduct: displayStatus(student, ClearanceCode.SDP_CODE_OF_CONDUCT, clearances[4].status),
-    intl_affidavit: displayStatus(student, ClearanceCode.INTL_AFFIDAVIT, clearances[5].status),
+    pa_child_abuse: display(ClearanceCode.PA_CHILD_ABUSE),
+    patch: display(ClearanceCode.PATCH),
+    fbi_or_affidavit: display(ClearanceCode.FBI_OR_AFFIDAVIT),
+    mandated_reporter: display(ClearanceCode.MANDATED_REPORTER),
+    sdp_code_of_conduct: display(ClearanceCode.SDP_CODE_OF_CONDUCT),
+    intl_affidavit: display(ClearanceCode.INTL_AFFIDAVIT),
     notes: row.notes ?? "",
     in_sdp: row.in_sdp === 1,
   };

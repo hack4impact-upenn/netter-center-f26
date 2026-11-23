@@ -312,6 +312,8 @@ bun run setup
 
 The schema can be reapplied and preserves existing users and sessions. It adds
 `box_connections`, `box_oauth_attempts`, `box_folder_access`, and their indexes.
+Setup also adds the `users.role` column with the `ta` default on databases
+created before roles were introduced.
 All new timestamps use integer Unix milliseconds. Existing session timestamps
 continue to support both ISO strings and SQLite datetime strings.
 
