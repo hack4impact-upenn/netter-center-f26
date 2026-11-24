@@ -11,32 +11,37 @@ type SessionWithRole = {
 /**
  * Validates Bearer token and sets userId + userRole on context.
  */
-export const requireAuth = createMiddleware<AppEnv>(async (c, next) => {
-  const header = c.req.header("Authorization");
+export function createRequireAuth(
+  findSessions = (sql: string, params: unknown[]) => query<SessionWithRole>(sql, params)
+) {
+  return createMiddleware<AppEnv>(async (c, next) => {
+    const header = c.req.header("Authorization");
 
-  if (!header || !header.startsWith("Bearer ")) {
-    return c.json({ error: "Missing or invalid Authorization header" }, 401);
-  }
+    if (!header || !header.startsWith("Bearer ")) {
+      return c.json({ error: "Missing or invalid Authorization header" }, 401);
+    }
 
-  const token = header.slice(7);
+    const token = header.slice(7);
 
-  const sessions = await query<SessionWithRole>(
-    `SELECT s.user_id, s.expires_at, u.role
-     FROM sessions s
-     JOIN users u ON u.id = s.user_id
-     WHERE s.token = ? AND s.expires_at > datetime('now')`,
-    [token]
-  );
+    const [session] = await findSessions(
+      `SELECT s.user_id, s.expires_at, u.role
+       FROM sessions s
+       JOIN users u ON u.id = s.user_id
+       WHERE s.token = ? AND julianday(s.expires_at) > julianday('now')`,
+      [token]
+    );
 
-  const session = sessions[0];
-  if (!session) {
-    return c.json({ error: "Invalid or expired session" }, 401);
-  }
+    if (!session) {
+      return c.json({ error: "Invalid or expired session" }, 401);
+    }
 
-  c.set("userId", session.user_id);
-  c.set("userRole", session.role);
-  await next();
-});
+    c.set("userId", session.user_id);
+    c.set("userRole", session.role);
+    await next();
+  });
+}
+
+export const requireAuth = createRequireAuth();
 
 /**
  * Must be placed AFTER requireAuth. Rejects non-admin users with 403.

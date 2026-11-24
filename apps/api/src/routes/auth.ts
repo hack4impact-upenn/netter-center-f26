@@ -76,16 +76,16 @@ auth.post("/login", authRateLimit, async (c) => {
     return c.json({ error: "Email and password are required" }, 400);
   }
 
-  const users = await query<{ id: string; password_hash: string; role: UserRole }>(
+  const [user] = await query<{ id: string; password_hash: string; role: UserRole }>(
     "SELECT id, password_hash, role FROM users WHERE email = ?",
     [body.email]
   );
 
-  if (users.length === 0) {
+  if (!user) {
     return c.json({ error: "Invalid email or password" }, 401);
   }
 
-  const valid = await Bun.password.verify(body.password, users[0]!.password_hash);
+  const valid = await Bun.password.verify(body.password, user.password_hash);
 
   if (!valid) {
     return c.json({ error: "Invalid email or password" }, 401);
@@ -99,10 +99,10 @@ auth.post("/login", authRateLimit, async (c) => {
 
   await execute(
     "INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)",
-    [token, users[0]!.id, sessionExpiry]
+    [token, user.id, sessionExpiry]
   );
 
-  return c.json({ token, role: users[0].role });
+  return c.json({ token, role: user.role });
 });
 
 auth.post("/logout", requireAuth, async (c) => {

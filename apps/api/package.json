@@ -5,17 +5,21 @@
   "type": "module",
   "scripts": {
     "dev": "bun --watch src/index.ts",
-    "build": "bun build src/index.ts --outdir dist --target bun",
+    "build": "bun build src/index.ts src/box-listing-worker.ts --outdir dist --target bun",
     "start": "bun dist/index.js",
     "test": "bun test",
+    "dev:box": "bun src/box-local.ts",
+    "start:box-listing-worker": "bun --no-env-file src/box-listing-worker.ts",
     "setup": "bun scripts/setup.ts",
     "seed": "bun scripts/seed.ts",
     "reset": "bun scripts/reset.ts",
+    "verify:box-permissions": "bun scripts/verify-box-permissions.ts",
     "lint": "tsc --noEmit",
     "deploy": "echo 'Deploy via Railway dashboard or CLI'"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3",
+    "csv-parse": "6.1.0",
     "hono": "^4",
     "resend": "^4",
     "shared": "workspace:*",

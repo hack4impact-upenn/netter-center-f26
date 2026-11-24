@@ -27,15 +27,22 @@ export async function query<T = unknown>(
   }
 
   const json = (await res.json()) as {
-    result: { results: T[] }[];
-  };
-  return json.result[0]?.results ?? [];
+    success?: boolean;
+    result?: { success?: boolean; results?: T[] }[];
+  } | null;
+  const result = json?.result?.[0];
+  if (
+    json?.success === false ||
+    !result ||
+    result.success === false ||
+    !Array.isArray(result.results)
+  ) {
+    throw new Error("D1 query returned an invalid result");
+  }
+  return result.results;
 }
 
-export async function execute(
-  sql: string,
-  params: unknown[] = []
-): Promise<void> {
+export async function execute(sql: string, params: unknown[] = []): Promise<void> {
   const res = await fetch(`${dbUrl()}/query`, {
     method: "POST",
     headers: headers(),

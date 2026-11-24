@@ -1,4 +1,4 @@
-import { execute } from "../src/integrations/database";
+import { execute, query } from "../src/integrations/database";
 
 const REQUIRED_VARS = [
   "CLOUDFLARE_ACCOUNT_ID",
@@ -49,6 +49,23 @@ async function runSqlFile(label: string, path: URL) {
   }
 }
 
+export async function ensureUserRoleColumn(runQuery = query) {
+  async function hasRoleColumn() {
+    const columns = await runQuery<{ name: string }>("PRAGMA table_info(users)");
+    return columns.some(({ name }) => name === "role");
+  }
+  if (await hasRoleColumn()) return;
+
+  try {
+    await runQuery(
+      "ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'ta' CHECK (role IN ('admin', 'ta'))"
+    );
+  } catch (error) {
+    // Another setup process may have added the column after the initial check.
+    if (!(await hasRoleColumn())) throw error;
+  }
+}
+
 async function setup() {
   checkEnv();
 
@@ -60,6 +77,8 @@ async function setup() {
     new URL("../src/schema.sql", import.meta.url)
   );
 
+  await ensureUserRoleColumn();
+
   // 2. Overview view
   await runSqlFile(
     "Creating views",
@@ -69,4 +88,4 @@ async function setup() {
   console.log("\n✓ Database setup complete.");
 }
 
-setup();
+if (import.meta.main) await setup();

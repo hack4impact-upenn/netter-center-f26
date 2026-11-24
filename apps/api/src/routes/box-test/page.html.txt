@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Box listing test</title>
+    <link rel="icon" href="data:," />
+    <style>
+      body {
+        max-width: 45rem;
+        margin: 1rem auto;
+        padding: 0 1rem;
+        overflow-wrap: anywhere;
+      }
+      input,
+      textarea {
+        box-sizing: border-box;
+        max-width: 100%;
+      }
+      li,
+      #results h3 {
+        white-space: pre-wrap;
+      }
+    </style>
+    <script src="/api/box/test/client.js" defer></script>
+  </head>
+  <body>
+    <h1>Box listing test</h1>
+    <form id="login" method="post">
+      <fieldset id="login-fields">
+        <legend>App sign-in</legend>
+        <p>
+          <label
+            >Email <input name="email" type="email" autocomplete="username" required
+          /></label>
+        </p>
+        <p>
+          <label
+            >Password
+            <input
+              name="password"
+              type="password"
+              autocomplete="current-password"
+              required
+          /></label>
+        </p>
+        <button>Sign in</button>
+      </fieldset>
+    </form>
+
+    <section id="tools" hidden>
+      <h2>Box account</h2>
+      <fieldset id="box-actions">
+        <button id="connect" type="button">Connect Box</button>
+        <button id="check" type="button">Check connection</button>
+        <button id="disconnect" type="button">Disconnect Box</button>
+        <button id="logout" type="button">Sign out</button>
+      </fieldset>
+      <p>
+        <a id="authorize" target="_blank" rel="noopener noreferrer" hidden
+          >Authorize on Box (opens a tab)</a
+        >
+      </p>
+      <form id="listing" method="post">
+        <fieldset id="listing-fields">
+          <legend>List files</legend>
+          <p>
+            <label for="folders"
+              >Authorized folder IDs (one per line or comma-separated)</label
+            >
+          </p>
+          <textarea id="folders" rows="3" cols="28" required></textarea>
+          <p><button>List files</button></p>
+        </fieldset>
+      </form>
+    </section>
+
+    <p id="status" role="status" aria-live="polite">Sign in with a test app account.</p>
+    <section id="results" aria-label="Folder results"></section>
+  </body>
+</html>

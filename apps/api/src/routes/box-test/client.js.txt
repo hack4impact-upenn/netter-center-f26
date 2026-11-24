@@ -1,0 +1,235 @@
+"use strict";
+
+const element = (id) => document.getElementById(id);
+const login = element("login");
+const tools = element("tools");
+const authorize = element("authorize");
+const results = element("results");
+const status = element("status");
+let session = null;
+let busy = false;
+
+function setSession(token) {
+  session = token;
+  login.hidden = !!token;
+  tools.hidden = !token;
+  authorize.hidden = true;
+  authorize.removeAttribute("href");
+  results.replaceChildren();
+}
+
+function message(error) {
+  if (error.status === 401) return "Sign in with a valid app account.";
+  if (error.code === "reconnect_required")
+    return "Reconnect your Box account and try again.";
+  if (error.code === "refreshing")
+    return "Box is refreshing the connection. Try again shortly.";
+  if (error.code === "not_found")
+    return "Folder unavailable. Check the exact folder grant and Box access.";
+  if (error.code === "rate_limited") return "Box is rate limited. Try again later.";
+  if (error.code === "unavailable" || error.status === 503)
+    return "The requested service is unavailable. Check the local API configuration.";
+  return "Request failed. Check the API response and try again.";
+}
+
+async function request(path, { method = "GET", body } = {}) {
+  const headers = new Headers();
+  if (session) headers.set("Authorization", "Bearer " + session);
+  if (body) headers.set("Content-Type", "application/json");
+  const response = await fetch(path, {
+    method,
+    headers,
+    body: body ? JSON.stringify(body) : undefined,
+    cache: "no-store",
+    credentials: "same-origin",
+    redirect: "error",
+  });
+  if (!response.ok) {
+    const detail = await response.json().catch(() => null);
+    const error = Object.assign(new Error("Request failed"), {
+      status: response.status,
+      code: detail?.code,
+    });
+    if (error.status === 401) setSession(null);
+    throw error;
+  }
+  return response.json();
+}
+
+async function run(action) {
+  if (busy) return;
+  busy = true;
+  const controls = ["login-fields", "box-actions", "listing-fields"].map(element);
+  controls.forEach((part) => (part.disabled = true));
+  try {
+    await action();
+  } catch (error) {
+    status.textContent = message(error);
+  } finally {
+    controls.forEach((part) => (part.disabled = false));
+    busy = false;
+  }
+}
+
+async function checkConnection() {
+  status.textContent = "Checking Box connection…";
+  const { connection } = await request("/api/box/connection");
+  status.textContent = !connection
+    ? "Connect a Box account."
+    : connection.status === "active"
+      ? "Box account connected."
+      : connection.status === "refreshing"
+        ? "Box is refreshing this connection. Check again shortly."
+        : "Reconnect your Box account.";
+}
+
+login.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const data = new FormData(login);
+  login.reset();
+  void run(async () => {
+    status.textContent = "Signing in…";
+    const { token } = await request("/api/auth/login", {
+      method: "POST",
+      body: { email: data.get("email"), password: data.get("password") },
+    });
+    if (typeof token !== "string" || !token) throw new Error("Invalid session");
+    setSession(token);
+    await checkConnection();
+  });
+});
+
+element("connect").addEventListener(
+  "click",
+  () =>
+    void run(async () => {
+      authorize.hidden = true;
+      authorize.removeAttribute("href");
+      status.textContent = "Starting Box authorization…";
+      const { authorizationUrl } = await request("/api/box/connect", { method: "POST" });
+      const url = new URL(authorizationUrl);
+      if (
+        url.origin !== "https://account.box.com" ||
+        url.pathname !== "/api/oauth2/authorize"
+      ) {
+        throw new Error("Invalid authorization destination");
+      }
+      authorize.href = url.href;
+      authorize.hidden = false;
+      status.textContent =
+        "Open the Box link, authorize in the new tab, then check the connection here.";
+    })
+);
+
+element("check").addEventListener("click", () => void run(checkConnection));
+element("disconnect").addEventListener(
+  "click",
+  () =>
+    void run(async () => {
+      status.textContent = "Disconnecting Box…";
+      const { revocationConfirmed } = await request("/api/box/connection", {
+        method: "DELETE",
+      });
+      authorize.hidden = true;
+      authorize.removeAttribute("href");
+      results.replaceChildren();
+      status.textContent = revocationConfirmed
+        ? "Box disconnected."
+        : "Box disconnected locally. Box revocation could not be confirmed.";
+    })
+);
+element("logout").addEventListener(
+  "click",
+  () =>
+    void run(async () => {
+      await request("/api/auth/logout", { method: "POST" });
+      setSession(null);
+      status.textContent = "Signed out.";
+    })
+);
+
+async function readFolder(id) {
+  const files = [];
+  const seen = new Set();
+  let folderName;
+  let marker = null;
+  do {
+    const params = new URLSearchParams();
+    if (marker !== null) params.set("marker", marker);
+    const suffix = params.size ? "?" + params : "";
+    const page = await request("/api/box/folders/" + id + "/files" + suffix);
+    if (
+      page.folderId !== id ||
+      typeof page.folderName !== "string" ||
+      !Array.isArray(page.files)
+    ) {
+      throw new Error("Invalid folder page");
+    }
+    folderName = page.folderName;
+    for (const file of page.files) {
+      if (typeof file.name !== "string") throw new Error("Invalid file name");
+      files.push(file.name);
+    }
+    marker = page.nextMarker;
+    if (marker !== null) {
+      if (typeof marker !== "string" || !marker || seen.has(marker)) {
+        throw new Error("Invalid pagination marker");
+      }
+      seen.add(marker);
+    }
+  } while (marker !== null);
+  return { folderName, files };
+}
+
+function showFolder(id, result, error) {
+  const section = document.createElement("section");
+  const title = document.createElement("h3");
+  title.textContent = result ? result.folderName + " (" + id + ")" : "Folder " + id;
+  section.append(title);
+  if (!result || result.files.length === 0) {
+    const detail = document.createElement("p");
+    detail.textContent = error ? message(error) : "No files.";
+    section.append(detail);
+  } else {
+    const list = document.createElement("ul");
+    for (const name of result.files) {
+      const item = document.createElement("li");
+      item.textContent = name;
+      list.append(item);
+    }
+    section.append(list);
+  }
+  results.append(section);
+}
+
+element("listing").addEventListener("submit", (event) => {
+  event.preventDefault();
+  void run(async () => {
+    const ids = [
+      ...new Set(
+        element("folders")
+          .value.split(/[\s,]+/)
+          .filter(Boolean)
+      ),
+    ];
+    results.replaceChildren();
+    if (!ids.length || ids.some((id) => !/^[1-9][0-9]{0,63}$/.test(id))) {
+      status.textContent = "Enter one or more valid Box folder IDs.";
+      return;
+    }
+    let failures = 0;
+    for (const id of ids) {
+      status.textContent = "Loading folder " + id + "…";
+      try {
+        showFolder(id, await readFolder(id));
+      } catch (error) {
+        if (!session) throw error;
+        failures++;
+        showFolder(id, null, error);
+      }
+    }
+    status.textContent = failures
+      ? failures + " of " + ids.length + " folders could not be listed."
+      : "Listed " + ids.length + (ids.length === 1 ? " folder." : " folders.");
+  });
+});

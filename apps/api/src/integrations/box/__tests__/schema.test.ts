@@ -1,0 +1,112 @@
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { Database } from "bun:sqlite";
+import { ensureUserRoleColumn } from "../../../../scripts/setup";
+import { NOW, openDatabase, schema, seedUsers, sqliteQuery } from "./fixtures";
+
+describe("Box authorization schema on SQLite", () => {
+  let db: Database;
+  beforeEach(() => {
+    db = openDatabase();
+    seedUsers(db);
+  });
+  afterEach(() => {
+    db.close();
+  });
+
+  function insertConnection() {
+    db.run(
+      `INSERT INTO box_connections
+      (id, user_id, box_user_id, status, tokens_ciphertext, access_expires_at, created_at, updated_at)
+      VALUES ('connection-1', 'user-1', '123', 'active', 'v1.synthetic', ?, ?, ?)`,
+      [NOW + 1000, NOW, NOW]
+    );
+  }
+
+  function insertAttempt(userId = "user-1", session = "session-1", ttl = 600_000) {
+    db.run(
+      `INSERT INTO box_oauth_attempts
+      (state_hash, browser_nonce_hash, user_id, session_token, created_at, expires_at)
+      VALUES (?, ?, ?, ?, ?, ?)`,
+      ["a".repeat(64), "b".repeat(64), userId, session, NOW, NOW + ttl]
+    );
+  }
+
+  it("upgrades the original schema and can be reapplied without losing users, roles or sessions", async () => {
+    const legacy = new Database(":memory:");
+    try {
+      legacy.exec("PRAGMA foreign_keys = ON");
+      const beforeBox = schema.split("-- Box OAuth and folder grants")[0] ?? "";
+      legacy.exec(beforeBox.replace(/^  role TEXT .*\n/m, ""));
+      seedUsers(legacy);
+      legacy.exec(schema);
+      await ensureUserRoleColumn(sqliteQuery(legacy));
+      expect(legacy.query("SELECT role FROM users ORDER BY id").all()).toEqual([
+        { role: "ta" },
+        { role: "ta" },
+      ]);
+      legacy.run("UPDATE users SET role = 'admin' WHERE id = 'user-1'");
+      legacy.exec(schema);
+      await ensureUserRoleColumn(sqliteQuery(legacy));
+      expect(legacy.query("SELECT id, role FROM users ORDER BY id").all()).toEqual([
+        { id: "user-1", role: "admin" },
+        { id: "user-2", role: "ta" },
+      ]);
+      expect(legacy.query("SELECT token FROM sessions ORDER BY token").all()).toEqual([
+        { token: "session-1" },
+        { token: "session-2" },
+      ]);
+      expect(legacy.query("PRAGMA foreign_key_check").all()).toEqual([]);
+    } finally {
+      legacy.close();
+    }
+  });
+
+  it("binds an OAuth attempt's application user to the owning session", () => {
+    expect(() => insertAttempt("user-2", "session-1")).toThrow("FOREIGN KEY");
+    expect(() => insertAttempt("user-1", "missing-session")).toThrow("FOREIGN KEY");
+    insertAttempt();
+    expect(db.query("SELECT user_id FROM box_oauth_attempts").all()).toEqual([
+      { user_id: "user-1" },
+    ]);
+  });
+
+  it("blocks cross-user folder grants at the database boundary", () => {
+    insertConnection();
+    expect(() =>
+      db.run(
+        `INSERT INTO box_folder_access (user_id, box_folder_id, connection_id, created_at)
+      VALUES ('user-2', '999', 'connection-1', ?)`,
+        [NOW]
+      )
+    ).toThrow("FOREIGN KEY");
+    db.run(
+      `INSERT INTO box_folder_access (user_id, box_folder_id, connection_id, created_at)
+      VALUES ('user-1', '999', 'connection-1', ?)`,
+      [NOW]
+    );
+    expect(() =>
+      db.run(
+        `INSERT INTO box_folder_access (user_id, box_folder_id, connection_id, created_at)
+      VALUES ('user-1', '999', 'connection-1', ?)`,
+        [NOW]
+      )
+    ).toThrow("UNIQUE");
+  });
+
+  it("cascades user deletion through sessions, attempts, connections and grants", () => {
+    insertAttempt();
+    insertConnection();
+    db.run(
+      "INSERT INTO box_folder_access (user_id, box_folder_id, connection_id, created_at) VALUES ('user-1', '999', 'connection-1', ?)",
+      [NOW]
+    );
+    db.run("DELETE FROM users WHERE id = 'user-1'");
+    for (const table of ["box_oauth_attempts", "box_connections", "box_folder_access"]) {
+      expect(db.query(`SELECT * FROM ${table}`).all()).toEqual([]);
+    }
+    expect(db.query("SELECT token FROM sessions").all()).toEqual([
+      { token: "session-2" },
+    ]);
+    expect(db.query("PRAGMA foreign_key_check").all()).toEqual([]);
+  });
+});

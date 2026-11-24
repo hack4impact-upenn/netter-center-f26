@@ -1,3 +1,6 @@
+import { inspectListingWorker } from "./integrations/box/listing-worker-client";
+import { BOX_ENV_VARS, inspectBoxConfiguration } from "./integrations/box/config";
+
 type EnvVar = {
   name: string;
   required: boolean;
@@ -14,6 +17,9 @@ const ENV_VARS: EnvVar[] = [
 
   // D1
   { name: "D1_DATABASE_ID", required: true, integration: "database" },
+
+  // Box is optional. Partial/invalid configuration disables Box, not the API.
+  ...BOX_ENV_VARS.map((name) => ({ name, required: false, integration: "box" })),
 
   // R2
   { name: "R2_BUCKET_NAME", required: false, integration: "storage" },
@@ -52,6 +58,20 @@ export function validateEnv(): void {
         warnings.push(`  - ${v.name} (${v.integration})`);
       }
     }
+  }
+
+  const box = inspectBoxConfiguration();
+  if (box.status === "invalid") {
+    warnings.push(...box.errors.map((error) => `  - Box unavailable: ${error}`));
+  }
+
+  if (
+    (process.env.BOX_LISTING_WORKER_URL || process.env.BOX_LISTING_WORKER_SECRET) &&
+    !inspectListingWorker()
+  ) {
+    warnings.push(
+      "  - Box listing unavailable: check BOX_LISTING_WORKER_URL, BOX_LISTING_WORKER_SECRET, and BOX_LISTING_PERMISSIONS_VERIFIED"
+    );
   }
 
   if (warnings.length > 0) {
